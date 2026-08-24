@@ -256,6 +256,15 @@ def main() -> int:
     check("assinatura ativa apos pagar", sales.subscription_active(outro) is True)
     check("assinante acessa qualquer episodio", sales.has_access(outro, 12345) is True)
     check("pedidos pendentes listados", isinstance(db.list_orders(status="pending"), list))
+    # Rota do painel: exige sessao, lista, e confirma o pagamento.
+    check("vendas exige sessao", anon.get("/orders", follow_redirects=False).status_code in (303, 401))
+    check("GET vendas autenticado", client.get("/orders").status_code == 200)
+    oid3 = sales.create_episode_order("555003", episode_id=8)
+    r = client.post(f"/orders/{oid3}/confirm", data={"csrf": token}, follow_redirects=False)
+    check("painel confirma o pagamento",
+          r.status_code == 303 and db.get_order(oid3)["status"] == "paid", db.get_order(oid3))
+    r = client.post(f"/orders/{oid3}/confirm", data={"csrf": "x"}, follow_redirects=False)
+    check("confirmar sem csrf e recusado", r.status_code == 403, r.status_code)
 
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]

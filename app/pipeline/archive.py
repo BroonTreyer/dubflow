@@ -66,6 +66,14 @@ def archive_episode(episode: dict[str, Any], files: dict[str, Path]) -> Path:
     return dest
 
 
+def find(episode_id: int) -> dict[str, Any] | None:
+    """Localiza no acervo o meta.json de um episodio pelo id."""
+    for item in list_archive():
+        if item.get("id") == episode_id:
+            return item
+    return None
+
+
 def list_archive() -> list[dict[str, Any]]:
     """Le o acervo direto do disco — a fonte da verdade para o catalogo."""
     items = []

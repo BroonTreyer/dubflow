@@ -14,9 +14,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import db, publishers
+from app import db, publishers, sales
 from app.config import configure_logging
-from app.pipeline import runner
+from app.pipeline import archive, runner
 
 # Titulos de video vem em qualquer alfabeto. Com o log redirecionado para arquivo,
 # o Windows usa cp1252 e um titulo em turco/japones derruba o worker no meio do
@@ -118,6 +118,45 @@ def run_publish_queue() -> bool:
     return True
 
 
+def run_delivery_queue() -> bool:
+    """Entrega os pedidos ja pagos (confirmados no painel). Devolve True se agiu.
+
+    Roda fora da requisicao web porque enviar o video ao comprador pode demorar.
+    Avulso: manda o episodio. Assinatura: avisa que o acesso esta ativo. Uma falha
+    de rede deixa o pedido em 'paid' para a proxima volta tentar de novo.
+    """
+    pagos = [o for o in db.list_orders(status="paid")]
+    if not pagos:
+        return False
+    order = pagos[-1]  # o mais antigo (list_orders vem do mais novo para o mais velho)
+
+    if order["kind"] == "subscription":
+        expira = db.get_subscription_expiry(order["buyer_tg_id"]) or "?"
+        publishers.telegram.notify(
+            order["buyer_tg_id"],
+            f"Pagamento confirmado! Sua assinatura esta ativa ate {expira[:10]}. "
+            "Use /catalogo para pedir os episodios.",
+        )
+        db.update_order(order["id"], status="delivered")
+        return True
+
+    meta = archive.find(order["episode_id"])
+    if meta is None:
+        log.error("pedido %s: episodio %s nao encontrado no acervo", order["id"], order["episode_id"])
+        db.update_order(order["id"], status="canceled")
+        return True
+
+    log.info("entregando pedido %s (episodio %s) para %s",
+             order["id"], order["episode_id"], order["buyer_tg_id"])
+    result = publishers.telegram.deliver_episode(meta, order["buyer_tg_id"])
+    if result.ok:
+        sales.mark_delivered(order["id"])
+    else:
+        log.error("entrega do pedido %s falhou: %s (fica em 'paid' para retry)",
+                  order["id"], result.error)
+    return True
+
+
 def main() -> None:
     db.init_db()
 
@@ -138,9 +177,10 @@ def main() -> None:
             # As duas filas rodam a cada volta. Com `A or B`, uma fila de episodios
             # sempre cheia faria com que nenhum corte fosse publicado nunca.
             published = run_publish_queue()
+            delivered = run_delivery_queue()
             acted = run_action_queue()
             processed = run_episode_queue()
-            did_work = published or acted or processed
+            did_work = published or delivered or acted or processed
         except KeyboardInterrupt:
             log.info("encerrando")
             return

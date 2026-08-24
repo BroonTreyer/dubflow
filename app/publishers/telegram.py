@@ -66,6 +66,21 @@ def send_clip(video_path: Path, caption: str, chat_id: str | None = None) -> Pub
     return PublishResult(True, remote_id=message_id)
 
 
+def notify(chat_id: str, text: str) -> PublishResult:
+    """Manda uma mensagem de texto a um chat (confirmacao de assinatura, avisos)."""
+    if not configured():
+        return PublishResult(False, error="Telegram nao configurado")
+    try:
+        response = requests.post(
+            _url("sendMessage"), data={"chat_id": chat_id, "text": text}, timeout=30
+        ).json()
+    except requests.RequestException as exc:
+        return PublishResult(False, error=f"erro de rede: {exc}")
+    if not response.get("ok"):
+        return PublishResult(False, error=str(response.get("description")))
+    return PublishResult(True, remote_id=str(response["result"]["message_id"]))
+
+
 def catalog(only_sellable: bool = True) -> list[dict[str, Any]]:
     """Lista o acervo publicavel.
 

@@ -23,7 +23,7 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 
-from app import credentials, db, security
+from app import credentials, db, sales, security
 from app.config import configure_logging, settings
 from app.pipeline import archive
 from app.publishers import REGISTRY, status as publisher_status
@@ -118,6 +118,41 @@ def index(request: Request):
             "csrf": security.csrf_token(request),
         },
     )
+
+
+@app.get("/orders", response_class=HTMLResponse, dependencies=panel)
+def orders(request: Request, ok: int = 0):
+    return templates.TemplateResponse(
+        request,
+        "orders.html",
+        {
+            "orders": db.list_orders(),
+            "csrf": security.csrf_token(request),
+            "ok": bool(ok),
+        },
+    )
+
+
+@app.post("/orders/{order_id}/confirm", dependencies=panel)
+def confirm_order(request: Request, order_id: int, csrf: str = Form("")):
+    """Confirma o Pix recebido: o pedido vira 'pago' e o worker entrega."""
+    security.require_csrf(request, csrf)
+    order = db.get_order(order_id)
+    if order is None:
+        raise HTTPException(404, "pedido nao encontrado")
+    sales.confirm_payment(order_id)
+    return RedirectResponse("/orders?ok=1", status_code=303)
+
+
+@app.post("/orders/{order_id}/cancel", dependencies=panel)
+def cancel_order(request: Request, order_id: int, csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    order = db.get_order(order_id)
+    if order is None:
+        raise HTTPException(404, "pedido nao encontrado")
+    if order["status"] == "pending":
+        db.update_order(order_id, status="canceled")
+    return RedirectResponse("/orders", status_code=303)
 
 
 @app.get("/connections", response_class=HTMLResponse, dependencies=panel)

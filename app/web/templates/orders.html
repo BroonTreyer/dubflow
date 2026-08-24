@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Vendas — dubflow{% endblock %}
+{% block content %}
+
+<p class="muted"><a href="/">&larr; voltar</a></p>
+
+{% if ok %}
+<div class="note" style="border-left-color:var(--ok);background:#12211a;margin-bottom:16px">
+  Pagamento confirmado. O worker vai entregar em alguns segundos.
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Pedidos</h2>
+  <p class="muted" style="margin-bottom:4px">
+    Quando o cliente pagar o Pix, clique em <strong>Confirmar</strong> — o bot entrega
+    automático (episódio avulso) ou libera o acesso (assinatura).
+  </p>
+
+  {% if orders %}
+  <table>
+    <tr><th>#</th><th>Cliente</th><th>Tipo</th><th>Valor</th><th>Estado</th><th>Ação</th></tr>
+    {% for o in orders %}
+    <tr>
+      <td class="muted">{{ o.id }}</td>
+      <td>{{ o.buyer_name or o.buyer_tg_id }}</td>
+      <td>
+        {% if o.kind == 'subscription' %}assinatura{% else %}episódio #{{ o.episode_id }}{% endif %}
+      </td>
+      <td>{{ 'R$ %.2f'|format(o.amount or 0)|replace('.', ',') }}</td>
+      <td>
+        <span class="tag {% if o.status in ['paid','delivered'] %}done{% elif o.status == 'canceled' %}failed{% endif %}">
+          {{ {'pending':'aguardando','paid':'pago','delivered':'entregue','canceled':'cancelado'}.get(o.status, o.status) }}
+        </span>
+      </td>
+      <td>
+        {% if o.status == 'pending' %}
+        <div class="row">
+          <form method="post" action="/orders/{{ o.id }}/confirm">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button type="submit">Confirmar</button>
+          </form>
+          <form method="post" action="/orders/{{ o.id }}/cancel">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button type="submit" class="ghost">Cancelar</button>
+          </form>
+        </div>
+        {% else %}
+        <span class="muted">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">Nenhum pedido ainda. Os pedidos aparecem aqui quando um cliente compra pelo bot.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
