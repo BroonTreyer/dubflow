@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}{{ episode.title or 'Episodio' }} — dubflow{% endblock %}
+{% block content %}
+
+<p class="muted"><a href="/">&larr; voltar</a></p>
+
+{% if duplicado %}
+<div class="note" style="margin-bottom:18px">
+  Este link já havia sido enviado. Abrindo o episódio existente em vez de processar
+  (e pagar a tradução) de novo.
+</div>
+{% endif %}
+
+{% set untranslated = (episode.meta or {}).get('untranslated_segments', 0) %}
+{% if untranslated %}
+<div class="note" style="margin-bottom:18px">
+  <strong>{{ untranslated }}</strong> de {{ (episode.meta or {}).get('total_segments', '?') }}
+  segmentos voltaram sem tradução e ficaram com o texto original.
+  Revise a legenda antes de publicar.
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>{{ episode.title or episode.source_url }}</h2>
+  <p class="muted">
+    {{ episode.channel or 'canal desconhecido' }} ·
+    {{ (episode.duration or 0) | int // 60 }} min ·
+    origem {{ episode.lang_src or '?' }} &rarr; {{ episode.lang_dst }}
+  </p>
+  <div class="row" style="margin:14px 0">
+    <span class="tag {% if episode.status == 'done' %}done{% elif episode.status == 'failed' %}failed{% else %}run{% endif %}">
+      {{ episode.status }}
+    </span>
+    <div class="bar" style="flex:1"><i style="width: {{ (episode.progress * 100) | round(0) }}%"></i></div>
+  </div>
+
+  {% if episode.error %}
+  <div class="note" style="border-color:var(--err);background:#1d1315">
+    <strong>Falhou:</strong> {{ episode.error }}
+  </div>
+  <form method="post" action="/episodes/{{ episode.id }}/retry" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="ghost">Reprocessar</button>
+  </form>
+  {% elif episode.status == 'done' %}
+  <form method="post" action="/episodes/{{ episode.id }}/retry" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="ghost">Reprocessar</button>
+  </form>
+  {% endif %}
+
+  <div class="row" style="margin-top:14px">
+    {% if episode.paths.srt %}<a href="/download/{{ episode.id }}/srt">baixar legenda .srt</a>{% endif %}
+    {% if episode.paths.translated %}<a href="/download/{{ episode.id }}/translated">transcrição traduzida</a>{% endif %}
+  </div>
+</div>
+
+{% if episode.status in ['done', 'failed'] %}
+<div class="panel">
+  <h2>Vídeo completo legendado</h2>
+
+  {% if episode.pending_action %}
+  <div class="note">
+    Na fila: <strong>{{ 'queimando a legenda no vídeo' if episode.pending_action == 'burn'
+                        else 'refazendo os cortes' }}</strong>.
+    O worker começa em alguns segundos.
+  </div>
+
+  {% elif episode.paths.episode_burned %}
+  <p class="muted">Pronto — legenda queimada no vídeo inteiro.</p>
+  <div class="row">
+    <a href="/download/{{ episode.id }}/episode_burned">
+      <button type="button">Baixar vídeo legendado</button>
+    </a>
+    <form method="post" action="/episodes/{{ episode.id }}/action">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="action" value="burn">
+      <button type="submit" class="ghost">Gerar de novo</button>
+    </form>
+  </div>
+
+  {% else %}
+  <p class="muted">
+    Ainda não gerado. A queima re-codifica o vídeo inteiro e leva de
+    <strong>10 a 40 minutos</strong> conforme a duração — por isso não roda
+    automaticamente. O arquivo <code>.srt</code> acima já está pronto e serve
+    para subir como faixa de legenda no YouTube, sem re-codificar nada.
+  </p>
+  <form method="post" action="/episodes/{{ episode.id }}/action">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="action" value="burn">
+    <button type="submit">Gerar vídeo legendado</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Licenca</h2>
+  <form method="post" action="/episodes/{{ episode.id }}/license" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <select name="license_status">
+      {% for state in license_states %}
+      <option value="{{ state }}" {% if state == episode.license_status %}selected{% endif %}>{{ state }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="ghost">Salvar</button>
+    <span class="muted">
+      {% if episode.license_status == 'unknown' %}
+      Fora do catalogo pago ate a origem ser definida.
+      {% else %}
+      Liberado para o catalogo do Telegram.
+      {% endif %}
+    </span>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Cortes ({{ clips | length }})</h2>
+  {% if clips and episode.status in ['done', 'failed'] and not episode.pending_action %}
+  <form method="post" action="/episodes/{{ episode.id }}/action" style="margin-bottom:14px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="action" value="rerender_clips">
+    <button type="submit" class="ghost">Refazer cortes com o estilo atual de legenda</button>
+    <span class="muted">não repete transcrição nem tradução — não gasta API</span>
+  </form>
+  {% endif %}
+  {% if clips %}
+  <div class="grid">
+    {% for clip in clips %}
+    <div>
+      {% if clip.path %}
+      {% set nome = clip.path.split('\\')[-1].split('/')[-1] %}
+      <video controls preload="metadata" src="/media/{{ media_sig(nome) }}/{{ nome }}"></video>
+      {% else %}
+      <div class="bar" style="height:120px;border-radius:8px"></div>
+      {% endif %}
+      <p style="margin:8px 0 4px"><strong>{{ clip.title or 'sem titulo' }}</strong></p>
+      <p class="muted" style="margin:0 0 6px">
+        {{ clip.start | round(0) | int }}s &rarr; {{ clip.end | round(0) | int }}s ·
+        nota {{ clip.score | round(1) }} ·
+        <span class="tag {% if clip.status == 'ready' %}done{% elif clip.status == 'failed' %}failed{% endif %}">{{ clip.status }}</span>
+      </p>
+      {% if clip.caption %}
+      <details class="muted"><summary>legenda</summary><pre style="white-space:pre-wrap">{{ clip.caption }}</pre></details>
+      {% endif %}
+      {% if clip.status == 'ready' %}
+      <form method="post" action="/clips/{{ clip.id }}/publish" class="row" style="margin-top:8px">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="datetime-local" name="scheduled_at" title="agendar (opcional)"
+               style="max-width:190px">
+        <select name="platform">
+          {% for platform, ready in publishers.items() %}
+          <option value="{{ platform }}" {% if not ready %}disabled{% endif %}>
+            {{ platform }}{{ '' if ready else ' (sem credenciais)' }}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="ghost">Enfileirar</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Nenhum corte gerado ainda.</p>
+  {% endif %}
+</div>
+
+{% if posts %}
+<div class="panel">
+  <h2>Publicacoes</h2>
+  <table>
+    <tr><th>Corte</th><th>Plataforma</th><th>Estado</th><th>Link</th><th>Erro</th></tr>
+    {% for post in posts %}
+    <tr>
+      <td class="muted">#{{ post.clip_idx + 1 }}</td>
+      <td>{{ post.platform }}</td>
+      <td><span class="tag {% if post.status == 'published' %}done{% elif post.status == 'failed' %}failed{% endif %}">{{ post.status }}</span></td>
+      <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">abrir</a>{% else %}—{% endif %}</td>
+      <td class="muted">{{ post.error or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<script>
+// O episodio ja terminou? Entao nao ha nada para acompanhar — nenhum polling,
+// nenhum reload. Antes a pagina recarregava a cada 4s para sempre, o que
+// reiniciava qualquer video que voce estivesse assistindo.
+(function () {
+  const TERMINAIS = ['done', 'failed', 'canceled'];
+  const inicial = {{ episode.status | tojson }};
+  if (TERMINAIS.includes(inicial)) return;
+
+  const timer = setInterval(async () => {
+    let data;
+    try {
+      const res = await fetch('/api/episodes/{{ episode.id }}');
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+
+    const tag = document.querySelector('.tag');
+    const bar = document.querySelector('.bar > i');
+    if (tag) tag.textContent = data.status;
+    if (bar) bar.style.width = (data.progress * 100).toFixed(0) + '%';
+
+    // Recarrega uma unica vez, na transicao para um estado terminal, para
+    // mostrar os cortes e os downloads que acabaram de ficar prontos.
+    if (TERMINAIS.includes(data.status)) {
+      clearInterval(timer);
+      location.reload();
+    }
+  }, 4000);
+})();
+</script>
+{% endblock %}

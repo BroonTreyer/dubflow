@@ -1,0 +1,13 @@
+anthropic>=0.69
+faster-whisper>=1.2
+yt-dlp>=2026.1
+fastapi>=0.115
+uvicorn[standard]>=0.34
+jinja2>=3.1
+python-dotenv>=1.0
+python-multipart>=0.0.20
+requests>=2.32
+
+# DLLs CUDA para o ctranslate2 no Windows (transcricao na GPU)
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

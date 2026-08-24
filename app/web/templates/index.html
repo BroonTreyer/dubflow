@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="panel">
+  <h2>Novo episodio</h2>
+  <form method="post" action="/episodes">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row" style="margin-bottom:10px">
+      <input type="url" name="url" placeholder="https://www.youtube.com/watch?v=..." required
+             style="flex:1;min-width:320px">
+    </div>
+    <div class="row">
+      <label class="muted" for="license_status">Origem do conteudo</label>
+      <select name="license_status" id="license_status">
+        <option value="unknown">nao definida</option>
+        <option value="licensed">licenciada pelo criador</option>
+        <option value="owned">conteudo proprio</option>
+        <option value="public_domain">dominio publico / CC</option>
+      </select>
+      <button type="submit">Processar</button>
+    </div>
+  </form>
+  <p class="muted" style="margin-bottom:0">
+    Legenda, cortes e publicacao social funcionam com qualquer origem.
+    O catalogo pago do Telegram entrega apenas episodios com licenca definida.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Fila e historico</h2>
+  {% if episodes %}
+  <table>
+    <tr><th>#</th><th>Titulo</th><th>Canal</th><th>Estado</th><th>Progresso</th><th>Licenca</th></tr>
+    {% for ep in episodes %}
+    <tr data-id="{{ ep.id }}">
+      <td class="muted">{{ ep.id }}</td>
+      <td><a href="/episodes/{{ ep.id }}">{{ ep.title or ep.source_url[:60] }}</a></td>
+      <td class="muted">{{ ep.channel or '—' }}</td>
+      <td>
+        <span class="tag {% if ep.status == 'done' %}done{% elif ep.status == 'failed' %}failed
+              {% elif ep.status != 'queued' %}run{% endif %}">{{ ep.status }}</span>
+      </td>
+      <td><div class="bar"><i style="width: {{ (ep.progress * 100) | round(0) }}%"></i></div></td>
+      <td class="muted">{{ ep.license_status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">Nenhum episodio ainda. Cole um link acima.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Publicadores</h2>
+  <div class="row">
+    {% for platform, ready in publishers.items() %}
+    <span class="tag {% if ready %}done{% endif %}">
+      {{ platform }}: {{ 'configurado' if ready else 'sem credenciais' }}
+    </span>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+// Atualiza as linhas em andamento no lugar, sem nunca recarregar a pagina.
+(function () {
+  const TERMINAIS = ['done', 'failed', 'canceled'];
+  const emAndamento = () => [...document.querySelectorAll('tr[data-id]')].filter(tr => {
+    const estado = tr.querySelector('.tag').textContent.trim();
+    return !TERMINAIS.includes(estado);
+  });
+
+  const timer = setInterval(async () => {
+    const linhas = emAndamento();
+    if (!linhas.length) { clearInterval(timer); return; }  // nada rodando: para de perguntar
+    for (const tr of linhas) {
+      try {
+        const res = await fetch(`/api/episodes/${tr.dataset.id}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        tr.querySelector('.tag').textContent = data.status;
+        tr.querySelector('.bar > i').style.width = (data.progress * 100).toFixed(0) + '%';
+      } catch (e) { /* rede instavel: tenta de novo no proximo ciclo */ }
+    }
+  }, 4000);
+})();
+</script>
+{% endblock %}

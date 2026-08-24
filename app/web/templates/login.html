@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Entrar — dubflow{% endblock %}
+{% block content %}
+
+<div class="panel" style="max-width:420px;margin:60px auto">
+  <h2>Entrar</h2>
+  {% if erro %}
+  <div class="note" style="border-color:var(--err);background:#1d1315;margin-bottom:14px">
+    Senha incorreta.
+  </div>
+  {% endif %}
+  <form method="post" action="/login">
+    <input type="password" name="password" placeholder="senha do painel" required autofocus
+           style="width:100%;margin-bottom:12px">
+    <button type="submit" style="width:100%">Entrar</button>
+  </form>
+  <p class="muted" style="margin-bottom:0">
+    A senha vem de <code>DUBFLOW_PASSWORD</code> no arquivo <code>.env</code>.
+  </p>
+</div>
+
+{% endblock %}

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}dubflow{% endblock %}</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #171b22; --line: #262c36;
+    --text: #e6e9ef; --muted: #8b94a4; --accent: #4f8cff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header {
+    border-bottom: 1px solid var(--line); padding: 14px 22px;
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: -.2px; }
+  header span { color: var(--muted); font-size: 13px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 22px 64px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 18px;
+  }
+  h2 { font-size: 15px; margin: 0 0 14px; font-weight: 600; }
+  input, select, textarea, button {
+    font: inherit; background: #0f1319; color: var(--text);
+    border: 1px solid var(--line); border-radius: 7px; padding: 9px 11px;
+  }
+  input[type=text], input[type=url] { width: 100%; }
+  button {
+    background: var(--accent); border-color: var(--accent);
+    color: #fff; cursor: pointer; font-weight: 500;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--text); }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .bar { height: 5px; background: #21262e; border-radius: 3px; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+  .tag {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 12px; border: 1px solid var(--line); color: var(--muted);
+  }
+  .tag.done { color: var(--ok); border-color: #24512f; }
+  .tag.failed { color: var(--err); border-color: #5c2226; }
+  .tag.run { color: var(--warn); border-color: #5a4415; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  video { width: 100%; border-radius: 8px; background: #000; }
+  .note {
+    border-left: 3px solid var(--warn); padding: 10px 14px;
+    background: #1c1a12; border-radius: 0 7px 7px 0; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/" style="color:var(--text)">dubflow</a></h1>
+  <span>localizacao pt-BR &rarr; cortes &rarr; distribuicao</span>
+  <a href="/logout" class="muted" style="margin-left:auto">sair</a>
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>
