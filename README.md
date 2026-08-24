@@ -129,6 +129,13 @@ terceiro. O flag mantém o caminho legítimo como o padrão sem travar seu teste
 `data/glossaries/<canal-slug>.json` com pares `{"termo original": "tradução"}`
 mantém nomes e jargão consistentes entre episódios do mesmo canal. Opcional.
 
+## Análises
+
+A aba **Análises** do painel mostra o desempenho de cada vídeo publicado — views,
+curtidas e comentários, mais vistos primeiro, com os totais. O worker atualiza as
+métricas sozinho a cada ~30 min (YouTube, Instagram e TikTok; o Telegram não expõe
+esses números pelo bot). Só popula depois que as contas estão conectadas.
+
 ## Publicação
 
 - **YouTube** — upload direto via Data API v3 (OAuth2; rode `scripts/youtube_auth.py`

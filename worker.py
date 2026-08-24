@@ -167,6 +167,34 @@ def run_delivery_queue() -> bool:
     return True
 
 
+_last_stats_refresh: float | None = None
+STATS_INTERVAL = 1800  # atualiza as metricas no maximo a cada 30 min
+
+
+def run_stats_refresh() -> bool:
+    """De tempos em tempos, puxa views/curtidas das publicacoes para o painel."""
+    global _last_stats_refresh
+    agora = time.monotonic()
+    if _last_stats_refresh is not None and agora - _last_stats_refresh < STATS_INTERVAL:
+        return False
+    _last_stats_refresh = agora
+
+    posts = db.posts_needing_stats(limit=15)
+    if not posts:
+        return False
+    for post in posts:
+        try:
+            data = publishers.stats_for(post["platform"], post["remote_id"])
+        except Exception as exc:  # noqa: BLE001 — metrica e extra; nunca derruba o loop
+            log.warning("stats do post %s falharam: %s", post["id"], exc)
+            continue
+        if data:
+            db.update_post(post["id"], views=data.get("views"), likes=data.get("likes"),
+                           comments=data.get("comments"), stats_at=db.now())
+    log.info("metricas atualizadas para %d publicacao(oes)", len(posts))
+    return True
+
+
 def main() -> None:
     db.init_db()
 
@@ -188,9 +216,10 @@ def main() -> None:
             # sempre cheia faria com que nenhum corte fosse publicado nunca.
             published = run_publish_queue()
             delivered = run_delivery_queue()
+            stats = run_stats_refresh()
             acted = run_action_queue()
             processed = run_episode_queue()
-            did_work = published or delivered or acted or processed
+            did_work = published or delivered or stats or acted or processed
         except KeyboardInterrupt:
             log.info("encerrando")
             return

@@ -86,6 +86,25 @@ def publish(video_path: Path, caption: str, title: str | None = None,
         return PublishResult(False, error=f"erro de rede: {exc}")
 
 
+def stats(remote_id: str) -> dict[str, int | None] | None:
+    """Curtidas e comentarios do Reels. None se nao der para consultar."""
+    token = credentials.get("IG_ACCESS_TOKEN")
+    if not (remote_id and token):
+        return None
+    try:
+        body = requests.get(
+            f"{GRAPH}/{remote_id}",
+            params={"fields": "like_count,comments_count", "access_token": token},
+            timeout=30,
+        ).json()
+    except requests.RequestException as exc:
+        log.warning("stats do Instagram falharam: %s", exc)
+        return None
+    if "like_count" not in body and "comments_count" not in body:
+        return None
+    return {"views": None, "likes": body.get("like_count"), "comments": body.get("comments_count")}
+
+
 def _wait_ready(creation_id: str, timeout_seconds: int = 900, interval: int = 10) -> str:
     deadline = time.time() + timeout_seconds
     status = "IN_PROGRESS"

@@ -310,6 +310,21 @@ def main() -> int:
     check("post esgotado sai da fila", len(db.pending_posts()) == 0)
     db.update_post(pid, attempts=0)
 
+    print("analises / metricas dos videos")
+    db.update_post(pid, status="published", remote_id="vid123", views=1000, likes=50, comments=5)
+    ap = db.analytics_posts()
+    check("analytics lista publicado com metricas",
+          any(p["id"] == pid and p["views"] == 1000 for p in ap), ap[:1])
+    check("posts_needing_stats pega publicado com remote_id",
+          any(p["id"] == pid for p in db.posts_needing_stats()))
+    check("analytics exige sessao",
+          anon.get("/analytics", follow_redirects=False).status_code in (303, 401))
+    r = client.get("/analytics")
+    check("GET analytics autenticado", r.status_code == 200, r.status_code)
+    check("metricas aparecem no painel", "1.000" in r.text, "views nao renderizadas")
+    from app.publishers import stats_for
+    check("stats_for de plataforma sem suporte e None", stats_for("telegram", "x") is None)
+
     print("media assinada (achados 1 e 2)")
     ep1 = settings.data_dir / "episodes" / "ep_00001" / "clips"
     ep2 = settings.data_dir / "episodes" / "ep_00002" / "clips"

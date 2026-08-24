@@ -25,3 +25,12 @@ def publish(platform: str, video_path: Path, caption: str,
 
 def status() -> dict[str, bool]:
     return {plat: mod.configured() for plat, mod in REGISTRY.items()}
+
+
+def stats_for(platform: str, remote_id: str) -> dict[str, int | None] | None:
+    """Metricas (views/likes/comments) de uma publicacao, se a plataforma suportar."""
+    module = REGISTRY.get(platform)
+    fetch = getattr(module, "stats", None) if module else None
+    if fetch is None:
+        return None
+    return fetch(remote_id)

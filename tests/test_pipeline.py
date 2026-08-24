@@ -386,6 +386,16 @@ def test_youtube_metadata() -> None:
     # Sem credenciais no ambiente de teste, o publisher se declara nao configurado.
     check("nao configurado sem credenciais", youtube.configured() is False)
 
+    # Parser das metricas (views/curtidas) da resposta do YouTube.
+    parsed = youtube._parse_stats(
+        {"items": [{"statistics": {"viewCount": "1234", "likeCount": "56", "commentCount": "7"}}]}
+    )
+    check("stats parseia os numeros", parsed == {"views": 1234, "likes": 56, "comments": 7}, parsed)
+    check("stats sem itens vira None", youtube._parse_stats({"items": []}) is None)
+    ausente = youtube._parse_stats({"items": [{"statistics": {"viewCount": "9"}}]})
+    check("campo ausente vira None sem quebrar",
+          ausente == {"views": 9, "likes": None, "comments": None}, ausente)
+
 
 def main() -> int:
     tmp = pathlib.Path(__file__).parent / "_tmp"

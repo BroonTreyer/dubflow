@@ -95,6 +95,31 @@ def publish(video_path: Path, caption: str, title: str | None = None,
         return PublishResult(False, error=f"erro de rede: {exc}")
 
 
+def stats(remote_id: str) -> dict[str, int | None] | None:
+    """Views/curtidas/comentarios do video. Requer escopo de leitura no token."""
+    token = credentials.get("TIKTOK_ACCESS_TOKEN")
+    if not (remote_id and token):
+        return None
+    try:
+        body = requests.post(
+            f"{API}/video/query/",
+            params={"fields": "view_count,like_count,comment_count"},
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json; charset=UTF-8"},
+            json={"filters": {"video_ids": [remote_id]}},
+            timeout=30,
+        ).json()
+    except requests.RequestException as exc:
+        log.warning("stats do TikTok falharam: %s", exc)
+        return None
+    videos = (body.get("data") or {}).get("videos") or []
+    if not videos:
+        return None
+    v = videos[0]
+    return {"views": v.get("view_count"), "likes": v.get("like_count"),
+            "comments": v.get("comment_count")}
+
+
 def _wait_status(publish_id: str, headers: dict[str, str], timeout_seconds: int = 900) -> str:
     deadline = time.time() + timeout_seconds
     status = "PROCESSING"

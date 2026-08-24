@@ -120,6 +120,20 @@ def index(request: Request):
     )
 
 
+@app.get("/analytics", response_class=HTMLResponse, dependencies=panel)
+def analytics(request: Request):
+    posts = db.analytics_posts()
+    totals = {
+        "views": sum(p.get("views") or 0 for p in posts),
+        "likes": sum(p.get("likes") or 0 for p in posts),
+        "comments": sum(p.get("comments") or 0 for p in posts),
+        "count": len(posts),
+    }
+    return templates.TemplateResponse(
+        request, "analytics.html", {"posts": posts, "totals": totals}
+    )
+
+
 @app.get("/orders", response_class=HTMLResponse, dependencies=panel)
 def orders(request: Request, ok: int = 0):
     return templates.TemplateResponse(

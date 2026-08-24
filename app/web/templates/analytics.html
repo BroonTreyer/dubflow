@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Análises — dubflow{% endblock %}
+{% block content %}
+
+<p class="muted"><a href="/">&larr; voltar</a></p>
+
+<div class="panel">
+  <h2>Desempenho das publicações</h2>
+  <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+    <div>
+      <div style="font-size:26px;font-weight:700">{{ '{:,}'.format(totals.views).replace(',', '.') }}</div>
+      <div class="muted">views no total</div>
+    </div>
+    <div>
+      <div style="font-size:26px;font-weight:700">{{ '{:,}'.format(totals.likes).replace(',', '.') }}</div>
+      <div class="muted">curtidas</div>
+    </div>
+    <div>
+      <div style="font-size:26px;font-weight:700">{{ '{:,}'.format(totals.comments).replace(',', '.') }}</div>
+      <div class="muted">comentários</div>
+    </div>
+    <div>
+      <div style="font-size:26px;font-weight:700">{{ totals.count }}</div>
+      <div class="muted">vídeos publicados</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Vídeos (mais vistos primeiro)</h2>
+  {% if posts %}
+  <table>
+    <tr>
+      <th>Vídeo</th><th>Plataforma</th><th>Views</th><th>Curtidas</th><th>Coment.</th><th>Link</th>
+    </tr>
+    {% for p in posts %}
+    <tr>
+      <td>{{ p.clip_yt_title or p.clip_title or ('Episódio #' ~ p.episode_id) }}</td>
+      <td>{{ p.platform }}{% if p.orientation == 'horizontal' %} <span class="muted">16:9</span>{% endif %}</td>
+      <td>{% if p.views is not none %}{{ '{:,}'.format(p.views).replace(',', '.') }}{% else %}—{% endif %}</td>
+      <td>{% if p.likes is not none %}{{ '{:,}'.format(p.likes).replace(',', '.') }}{% else %}—{% endif %}</td>
+      <td>{% if p.comments is not none %}{{ '{:,}'.format(p.comments).replace(',', '.') }}{% else %}—{% endif %}</td>
+      <td>{% if p.permalink %}<a href="{{ p.permalink }}" target="_blank">abrir</a>{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="muted" style="margin-top:12px">
+    As métricas são atualizadas automaticamente pelo worker a cada ~30 min, para
+    cada vídeo publicado. Um traço (—) significa que a plataforma ainda não retornou
+    o dado (ou não expõe aquele número).
+  </p>
+  {% else %}
+  <p class="muted">
+    Nenhuma publicação ainda. Quando você publicar cortes e conectar as contas, o
+    desempenho aparece aqui.
+  </p>
+  {% endif %}
+</div>
+
+{% endblock %}

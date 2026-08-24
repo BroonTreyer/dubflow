@@ -185,12 +185,14 @@
 <div class="panel">
   <h2>Publicacoes</h2>
   <table>
-    <tr><th>Corte</th><th>Plataforma</th><th>Estado</th><th>Link</th><th>Erro</th></tr>
+    <tr><th>Corte</th><th>Plataforma</th><th>Estado</th><th>Views</th><th>Curtidas</th><th>Link</th><th>Erro</th></tr>
     {% for post in posts %}
     <tr>
       <td class="muted">#{{ post.clip_idx + 1 }}</td>
       <td>{{ post.platform }}{% if post.orientation == 'horizontal' %} <span class="muted">16:9</span>{% endif %}</td>
       <td><span class="tag {% if post.status == 'published' %}done{% elif post.status == 'failed' %}failed{% endif %}">{{ post.status }}</span></td>
+      <td>{{ post.views if post.views is not none else '—' }}</td>
+      <td>{{ post.likes if post.likes is not none else '—' }}</td>
       <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">abrir</a>{% else %}—{% endif %}</td>
       <td class="muted">{{ post.error or '' }}</td>
     </tr>

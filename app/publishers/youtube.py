@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 
 # Limites da API: titulo do YouTube tem no maximo 100 caracteres; o conjunto de
 # tags nao pode passar de 500. Ultrapassar qualquer um faz o insert falhar inteiro.
@@ -158,6 +159,42 @@ def _set_thumbnail(token: str, video_id: str, thumb_path: Path) -> None:
             )
     except requests.RequestException as exc:
         log.warning("thumbnail nao aplicada: %s", exc)
+
+
+def stats(remote_id: str) -> dict[str, int | None] | None:
+    """Views/curtidas/comentarios do video. None se nao der para consultar."""
+    if not remote_id:
+        return None
+    token = _access_token()
+    if token is None:
+        return None
+    try:
+        payload = requests.get(
+            VIDEOS_URL,
+            params={"part": "statistics", "id": remote_id},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        ).json()
+    except requests.RequestException as exc:
+        log.warning("stats do YouTube falharam: %s", exc)
+        return None
+    return _parse_stats(payload)
+
+
+def _parse_stats(payload: dict) -> dict[str, int | None] | None:
+    items = payload.get("items") or []
+    if not items:
+        return None
+    s = items[0].get("statistics") or {}
+
+    def _num(v: object) -> int | None:
+        try:
+            return int(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    return {"views": _num(s.get("viewCount")), "likes": _num(s.get("likeCount")),
+            "comments": _num(s.get("commentCount"))}
 
 
 def _access_token() -> str | None:

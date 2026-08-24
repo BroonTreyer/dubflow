@@ -44,7 +44,8 @@ ACTIONS = ("burn", "rerender_clips")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
                 "yt_description", "score", "path", "path_wide", "thumb_path", "status"}
 POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
-                "scheduled_at", "posted_at", "attempts"}
+                "scheduled_at", "posted_at", "attempts",
+                "views", "likes", "comments", "stats_at"}
 
 
 def _guard(fields: dict[str, Any], allowed: set[str], table: str) -> None:
@@ -103,6 +104,10 @@ CREATE TABLE IF NOT EXISTS posts (
     scheduled_at TEXT,
     posted_at    TEXT,
     attempts     INTEGER NOT NULL DEFAULT 0,
+    views        INTEGER,
+    likes        INTEGER,
+    comments     INTEGER,
+    stats_at     TEXT,
     created_at   TEXT NOT NULL
 );
 
@@ -156,6 +161,11 @@ def init_db() -> None:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(posts)")}
         if "attempts" not in columns:
             conn.execute("ALTER TABLE posts ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        for col in ("views", "likes", "comments"):
+            if col not in columns:
+                conn.execute(f"ALTER TABLE posts ADD COLUMN {col} INTEGER")
+        if "stats_at" not in columns:
+            conn.execute("ALTER TABLE posts ADD COLUMN stats_at TEXT")
 
         ep_columns = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
         if "pending_action" not in ep_columns:
@@ -447,6 +457,33 @@ def list_posts(episode_id: int) -> list[dict[str, Any]]:
             "SELECT p.*, c.idx AS clip_idx FROM posts p JOIN clips c ON c.id = p.clip_id"
             " WHERE c.episode_id = ? ORDER BY p.id",
             (episode_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def posts_needing_stats(limit: int = 10) -> list[dict[str, Any]]:
+    """Publicacoes com id remoto, priorizando as nunca atualizadas / mais antigas."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, platform, remote_id FROM posts"
+            " WHERE status = 'published' AND remote_id IS NOT NULL"
+            " ORDER BY (stats_at IS NULL) DESC, stats_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def analytics_posts(limit: int = 200) -> list[dict[str, Any]]:
+    """Publicacoes com metricas, do maior numero de views para o menor."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT p.*, c.title AS clip_title, c.yt_title AS clip_yt_title,"
+            " c.episode_id, e.title AS episode_title"
+            " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " JOIN episodes e ON e.id = c.episode_id"
+            " WHERE p.status = 'published'"
+            " ORDER BY COALESCE(p.views, -1) DESC, p.id DESC LIMIT ?",
+            (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
 
