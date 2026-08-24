@@ -64,19 +64,24 @@ def run_publish_queue() -> bool:
         return False
 
     post = posts[0]
-    clip_path = post.get("clip_path")
+    orientation = post.get("orientation") or "vertical"
+    # Horizontal usa a versao 16:9 do corte; vertical usa o 9:16 padrao.
+    clip_path = post.get("clip_path_wide") if orientation == "horizontal" else post.get("clip_path")
     attempts = (post.get("attempts") or 0) + 1
 
     if not clip_path or not Path(clip_path).exists():
+        faltando = "corte horizontal (16:9)" if orientation == "horizontal" else "corte"
         db.update_post(post["id"], status="failed", attempts=attempts,
-                       error="arquivo do corte nao encontrado")
+                       error=f"arquivo do {faltando} nao encontrado")
         return True
 
     db.update_post(post["id"], status="publishing", attempts=attempts)
     caption = post.get("clip_caption") or ""
-    log.info("publicando post %s em %s (tentativa %d)", post["id"], post["platform"], attempts)
+    title = post.get("clip_title")
+    log.info("publicando post %s em %s/%s (tentativa %d)",
+             post["id"], post["platform"], orientation, attempts)
 
-    result = publishers.publish(post["platform"], Path(clip_path), caption)
+    result = publishers.publish(post["platform"], Path(clip_path), caption, title)
     if result.ok:
         db.update_post(
             post["id"],

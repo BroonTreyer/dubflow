@@ -118,6 +118,6 @@ def deliver_episode(meta: dict[str, Any], chat_id: str) -> PublishResult:
     return result
 
 
-def publish(video_path: Path, caption: str) -> PublishResult:
+def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
     """Interface uniforme com os demais publishers."""
     return send_clip(video_path, caption)

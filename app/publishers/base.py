@@ -21,5 +21,9 @@ class Publisher(Protocol):
     def configured(self) -> bool:
         """True quando ha credenciais suficientes para publicar."""
 
-    def publish(self, video_path: Path, caption: str) -> PublishResult:
-        """Publica o video e devolve o resultado."""
+    def publish(self, video_path: Path, caption: str, title: str | None = None) -> PublishResult:
+        """Publica o video e devolve o resultado.
+
+        `title` e opcional: plataformas que separam titulo de legenda (YouTube) o
+        usam; as demais (Instagram, TikTok, Telegram) ignoram e usam so a caption.
+        """
