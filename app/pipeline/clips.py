@@ -65,6 +65,12 @@ o alinhamento.
 - `caption`: legenda pronta para publicar em pt-BR — uma linha de gancho, quebra de \
 linha, contexto em uma frase, quebra de linha, 3 a 5 hashtags relevantes. Sem emoji \
 em excesso, no maximo dois.
+- `yt_title`: titulo otimizado para o YouTube, em pt-BR. Ate 90 caracteres, com o \
+gancho ou o dado mais forte logo no comeco (as primeiras palavras decidem o clique). \
+Chamativo mas honesto — nada de clickbait que o trecho nao entrega. Sem hashtags.
+- `yt_description`: descricao para o YouTube, em pt-BR. Duas ou tres frases: o que o \
+trecho mostra e por que vale assistir, seguidas de 3 a 6 hashtags relevantes em uma \
+linha. Escreva para busca — use os termos que o publico procuraria.
 - `score`: 0 a 10, seu grau de confianca de que o trecho performa.
 
 Responda apenas com o JSON do schema.
@@ -83,9 +89,12 @@ CLIP_SCHEMA = {
                     "title": {"type": "string"},
                     "hook": {"type": "string"},
                     "caption": {"type": "string"},
+                    "yt_title": {"type": "string"},
+                    "yt_description": {"type": "string"},
                     "score": {"type": "number"},
                 },
-                "required": ["start", "end", "title", "hook", "caption", "score"],
+                "required": ["start", "end", "title", "hook", "caption",
+                             "yt_title", "yt_description", "score"],
                 "additionalProperties": False,
             },
         }
@@ -176,6 +185,8 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]]) -> li
                 "title": (clip.get("title") or "").strip()[:120],
                 "hook": (clip.get("hook") or "").strip()[:300],
                 "caption": (clip.get("caption") or "").strip()[:2000],
+                "yt_title": (clip.get("yt_title") or "").strip()[:100],
+                "yt_description": (clip.get("yt_description") or "").strip()[:4800],
                 "score": float(clip.get("score") or 0),
             }
         )

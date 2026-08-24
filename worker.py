@@ -75,14 +75,21 @@ def run_publish_queue() -> bool:
         return True
 
     db.update_post(post["id"], status="publishing", attempts=attempts)
-    caption = post.get("clip_caption") or ""
-    title = post.get("clip_title")
+    platform = post["platform"]
+    # Titulo otimizado para SEO (cai no titulo interno se faltar).
+    title = post.get("clip_yt_title") or post.get("clip_title")
+    # YouTube usa a descricao otimizada para busca; as outras redes usam a legenda
+    # social (gancho + hashtags), que e o formato certo para elas.
+    if platform == "youtube" and post.get("clip_yt_description"):
+        caption = post["clip_yt_description"]
+    else:
+        caption = post.get("clip_caption") or ""
     thumb = post.get("clip_thumb")
     thumb_path = Path(thumb) if thumb else None
     log.info("publicando post %s em %s/%s (tentativa %d)",
-             post["id"], post["platform"], orientation, attempts)
+             post["id"], platform, orientation, attempts)
 
-    result = publishers.publish(post["platform"], Path(clip_path), caption, title, thumb_path)
+    result = publishers.publish(platform, Path(clip_path), caption, title, thumb_path)
     if result.ok:
         db.update_post(
             post["id"],

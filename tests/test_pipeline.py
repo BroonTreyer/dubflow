@@ -98,7 +98,8 @@ def test_clip_sanitize() -> None:
     print("cortes / alinhamento e sobreposicao")
     segs = [{"start": i * 5.0, "end": i * 5.0 + 4.5, "text": f"fala {i}"} for i in range(40)]
     raw = [
-        {"start": 11.3, "end": 52.2, "title": "A", "hook": "h", "caption": "c", "score": 8},
+        {"start": 11.3, "end": 52.2, "title": "A", "hook": "h", "caption": "c", "score": 8,
+         "yt_title": "Titulo YT A", "yt_description": "descricao para busca #tag"},
         {"start": 30.0, "end": 70.0, "title": "sobreposto", "hook": "h", "caption": "c", "score": 9},
         {"start": 100.4, "end": 141.0, "title": "B", "hook": "h", "caption": "c", "score": 7},
         {"start": 150.0, "end": 152.0, "title": "curto", "hook": "h", "caption": "c", "score": 5},
@@ -106,6 +107,9 @@ def test_clip_sanitize() -> None:
     out = clips._sanitize(raw, segs)
     titles = [c["title"] for c in out]
     check("descarta sobreposto e curto", titles == ["A", "B"], titles)
+    check("carrega metadados de SEO (yt_title/yt_description)",
+          out[0].get("yt_title") == "Titulo YT A"
+          and out[0].get("yt_description") == "descricao para busca #tag", out[0])
     check("ordenado por tempo", out == sorted(out, key=lambda c: c["start"]))
     check("snap para fronteira de fala", abs(out[0]["start"] - (10.0 - 0.25)) < 0.01, out[0]["start"])
 

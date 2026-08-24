@@ -41,8 +41,8 @@ EPISODE_COLUMNS = {
 # worker: queimar a legenda no video inteiro, ou refazer os cortes (util depois
 # de mudar o estilo da legenda).
 ACTIONS = ("burn", "rerender_clips")
-CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "score", "path",
-                "path_wide", "thumb_path", "status"}
+CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
+                "yt_description", "score", "path", "path_wide", "thumb_path", "status"}
 POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
                 "scheduled_at", "posted_at", "attempts"}
 
@@ -78,15 +78,17 @@ CREATE TABLE IF NOT EXISTS clips (
     idx          INTEGER NOT NULL,
     start        REAL NOT NULL,
     end          REAL NOT NULL,
-    title        TEXT,
-    hook         TEXT,
-    caption      TEXT,
-    score        REAL,
-    path         TEXT,
-    path_wide    TEXT,
-    thumb_path   TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending',
-    created_at   TEXT NOT NULL
+    title          TEXT,
+    hook           TEXT,
+    caption        TEXT,
+    yt_title       TEXT,
+    yt_description TEXT,
+    score          REAL,
+    path           TEXT,
+    path_wide      TEXT,
+    thumb_path     TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_at     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS posts (
@@ -145,6 +147,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE clips ADD COLUMN path_wide TEXT")
         if "thumb_path" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_path TEXT")
+        if "yt_title" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN yt_title TEXT")
+        if "yt_description" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN yt_description TEXT")
 
         post_columns = {r["name"] for r in conn.execute("PRAGMA table_info(posts)")}
         if "orientation" not in post_columns:
@@ -324,8 +330,9 @@ def replace_clips(episode_id: int, clips: list[dict[str, Any]]) -> list[int]:
         ids = []
         for idx, clip in enumerate(clips):
             cur = conn.execute(
-                "INSERT INTO clips (episode_id, idx, start, end, title, hook, caption, score,"
-                " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO clips (episode_id, idx, start, end, title, hook, caption,"
+                " yt_title, yt_description, score, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     episode_id,
                     idx,
@@ -334,6 +341,8 @@ def replace_clips(episode_id: int, clips: list[dict[str, Any]]) -> list[int]:
                     clip.get("title"),
                     clip.get("hook"),
                     clip.get("caption"),
+                    clip.get("yt_title"),
+                    clip.get("yt_description"),
                     clip.get("score"),
                     ts,
                 ),
@@ -396,7 +405,8 @@ def pending_posts() -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT p.*, c.path AS clip_path, c.path_wide AS clip_path_wide,"
             " c.thumb_path AS clip_thumb, c.caption AS clip_caption,"
-            " c.title AS clip_title, c.episode_id"
+            " c.title AS clip_title, c.yt_title AS clip_yt_title,"
+            " c.yt_description AS clip_yt_description, c.episode_id"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"
             " WHERE p.status = 'pending'"
             "   AND p.attempts < ?"

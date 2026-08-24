@@ -135,7 +135,7 @@
       {% else %}
       <div class="bar" style="height:120px;border-radius:8px"></div>
       {% endif %}
-      <p style="margin:8px 0 4px"><strong>{{ clip.title or 'sem titulo' }}</strong></p>
+      <p style="margin:8px 0 4px"><strong>{{ clip.yt_title or clip.title or 'sem titulo' }}</strong></p>
       <p class="muted" style="margin:0 0 6px">
         {{ clip.start | round(0) | int }}s &rarr; {{ clip.end | round(0) | int }}s ·
         nota {{ clip.score | round(1) }} ·
@@ -147,7 +147,10 @@
         {% endif %}
       </p>
       {% if clip.caption %}
-      <details class="muted"><summary>legenda</summary><pre style="white-space:pre-wrap">{{ clip.caption }}</pre></details>
+      <details class="muted"><summary>legenda social</summary><pre style="white-space:pre-wrap">{{ clip.caption }}</pre></details>
+      {% endif %}
+      {% if clip.yt_description %}
+      <details class="muted"><summary>descrição YouTube</summary><pre style="white-space:pre-wrap">{{ clip.yt_description }}</pre></details>
       {% endif %}
       {% if clip.status == 'ready' %}
       <form method="post" action="/clips/{{ clip.id }}/publish" class="row" style="margin-top:8px">
