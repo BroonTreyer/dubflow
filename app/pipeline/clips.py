@@ -193,13 +193,26 @@ def _clip_segments(segments: list[dict[str, Any]], start: float, end: float) -> 
         text = (seg.get("text") or "").strip()
         if not text:
             continue
-        out.append(
-            {
-                "start": max(0.0, float(seg["start"]) - start),
-                "end": min(end - start, float(seg["end"]) - start),
-                "text": text,
-            }
-        )
+        # Rebaseia tambem os timestamps por palavra (recortando a janela do corte),
+        # para a legenda do corte poder aparar no tempo real da fala.
+        words = []
+        for w in (seg.get("words") or []):
+            ws, we = w.get("start"), w.get("end")
+            if ws is None or we is None or float(we) <= start or float(ws) >= end:
+                continue
+            words.append({
+                "start": max(0.0, float(ws) - start),
+                "end": min(end - start, float(we) - start),
+                "word": w.get("word", ""),
+            })
+        entry = {
+            "start": max(0.0, float(seg["start"]) - start),
+            "end": min(end - start, float(seg["end"]) - start),
+            "text": text,
+        }
+        if words:
+            entry["words"] = words
+        out.append(entry)
     return out
 
 

@@ -231,6 +231,55 @@ def test_subtitle_styles() -> None:
           all(len(l) <= subtitles.CLIP_MAX_CHARS_PER_LINE for l in linhas), linhas)
 
 
+def test_resegment() -> None:
+    """A legenda deve seguir a fala: quebrar na pausa e aparar ao tempo das palavras."""
+    print("legendas / re-segmentacao por pausa")
+
+    # Segmento que junta duas falas com ~2s de silencio no meio.
+    seg = {
+        "start": 0.0, "end": 8.0, "text": "ola mundo tudo bem",
+        "words": [
+            {"start": 1.0, "end": 1.4, "word": "hello"},
+            {"start": 1.4, "end": 2.0, "word": "world"},
+            {"start": 4.0, "end": 4.5, "word": "how"},
+            {"start": 4.5, "end": 5.0, "word": "are"},
+        ],
+    }
+    cues = subtitles._resegment([seg])
+    check("quebra em duas legendas na pausa", len(cues) == 2, len(cues))
+    check("apara o silencio inicial (comeca na 1a palavra)", abs(cues[0]["start"] - 1.0) < 1e-6, cues[0]["start"])
+    check("primeira termina na ultima palavra do grupo", abs(cues[0]["end"] - 2.0) < 1e-6, cues[0]["end"])
+    check("segunda comeca so quando a fala volta", abs(cues[1]["start"] - 4.0) < 1e-6, cues[1]["start"])
+    check("nao ha legenda durante o silencio", cues[0]["end"] < cues[1]["start"], (cues[0]["end"], cues[1]["start"]))
+    check("todo o texto foi distribuido",
+          " ".join(c["text"] for c in cues).split() == ["ola", "mundo", "tudo", "bem"],
+          [c["text"] for c in cues])
+
+    # Uma fala so, com silencio antes e depois: vira uma legenda aparada.
+    seg2 = {
+        "start": 0.0, "end": 6.0, "text": "so uma frase",
+        "words": [{"start": 2.0, "end": 2.5, "word": "just"}, {"start": 2.5, "end": 3.2, "word": "one"}],
+    }
+    c2 = subtitles._resegment([seg2])
+    check("uma fala vira uma legenda", len(c2) == 1, len(c2))
+    check("apara silencio inicial e final", abs(c2[0]["start"] - 2.0) < 1e-6 and abs(c2[0]["end"] - 3.2) < 1e-6,
+          (c2[0]["start"], c2[0]["end"]))
+
+    # Sem timestamps por palavra, passa inalterado (nao quebra nada).
+    c3 = subtitles._resegment([{"start": 0.0, "end": 2.0, "text": "sem palavras"}])
+    check("sem timestamps passa inalterado",
+          len(c3) == 1 and c3[0]["start"] == 0.0 and c3[0]["end"] == 2.0, c3)
+
+    # Legenda muito curta ganha tempo minimo de leitura.
+    seg4 = {
+        "start": 0.0, "end": 10.0, "text": "a b",
+        "words": [{"start": 0.0, "end": 0.1, "word": "a"}, {"start": 0.15, "end": 0.2, "word": "b"}],
+    }
+    c4 = subtitles._resegment([seg4])
+    check("tempo minimo de leitura aplicado", c4[0]["end"] - c4[0]["start"] >= 0.8 - 1e-9,
+          c4[0]["end"] - c4[0]["start"])
+
+
 def test_karaoke(tmp: pathlib.Path) -> None:
     """Karaoke: cada palavra ganha uma duracao e a soma bate com o segmento."""
     print("legendas / karaoke")
@@ -351,6 +400,7 @@ def main() -> int:
     test_ffmpeg_quote_escape()
     test_transcribe_modes()
     test_subtitle_styles()
+    test_resegment()
     test_karaoke(tmp)
     test_reframe_focus()
     test_youtube_metadata()

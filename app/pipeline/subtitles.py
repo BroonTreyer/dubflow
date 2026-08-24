@@ -202,13 +202,86 @@ def _usable(segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         start, end = float(seg["start"]), float(seg["end"])
         if end <= start:
             end = start + 1.2
-        out.append({"start": start, "end": end, "text": text})
+        item: dict[str, Any] = {"start": start, "end": end, "text": text}
+        # Preserva os timestamps por palavra (quando houver) para o _resegment.
+        if seg.get("words"):
+            item["words"] = seg["words"]
+        out.append(item)
     return out
+
+
+# Silencio (em segundos) que separa uma legenda da seguinte. O segmento do Whisper
+# costuma juntar duas frases e esticar a janela sobre a pausa — a legenda entao
+# aparece cedo e fica parada na tela ate a fala acontecer. Quebrar na pausa e
+# aparar ao tempo real das palavras corrige os dois sintomas.
+SPLIT_GAP = 0.6
+MIN_CUE_SECONDS = 0.8  # tempo minimo de leitura, sem invadir a proxima legenda
+
+
+def _resegment(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-corta as legendas usando os timestamps por palavra.
+
+    - Quebra um segmento em legendas separadas onde ha pausa de silencio (> SPLIT_GAP).
+    - Apara o inicio/fim ao tempo real da primeira/ultima palavra (tira o silencio).
+    - Distribui o texto traduzido entre os pedacos, proporcional ao nº de palavras
+      de cada grupo (a traducao nao casa 1:1 com as palavras de origem, mas as
+      fronteiras de pausa sao reais, entao o texto cai no bloco de tempo certo).
+
+    Sem timestamps por palavra, o segmento passa inalterado.
+    """
+    cues: list[dict[str, Any]] = []
+    for seg in segments:
+        text = " ".join((seg.get("text") or "").split())
+        if not text:
+            continue
+        words = [w for w in (seg.get("words") or [])
+                 if w.get("start") is not None and w.get("end") is not None]
+        if len(words) < 2:
+            cues.append({"start": float(seg["start"]), "end": float(seg["end"]), "text": text})
+            continue
+
+        # Agrupa palavras separando nas pausas de silencio.
+        groups: list[list[dict[str, Any]]] = [[words[0]]]
+        for w in words[1:]:
+            if float(w["start"]) - float(groups[-1][-1]["end"]) > SPLIT_GAP:
+                groups.append([w])
+            else:
+                groups[-1].append(w)
+
+        if len(groups) == 1:
+            # Uma fala so: mantem o texto inteiro, apenas aparado ao tempo das palavras.
+            cues.append({"start": float(words[0]["start"]),
+                         "end": float(words[-1]["end"]), "text": text})
+            continue
+
+        # Distribui as palavras traduzidas entre os grupos, deixando ao menos 1 por grupo.
+        toks = text.split(" ")
+        total = sum(len(g) for g in groups)
+        i = 0
+        for gi, group in enumerate(groups):
+            restantes = len(groups) - 1 - gi
+            if gi == len(groups) - 1:
+                take = toks[i:]
+            else:
+                n = max(1, round(len(toks) * len(group) / total))
+                n = min(n, len(toks) - i - restantes)  # garante 1 token por grupo futuro
+                take = toks[i:i + n]
+                i += n
+            if take:
+                cues.append({"start": float(group[0]["start"]),
+                             "end": float(group[-1]["end"]), "text": " ".join(take)})
+
+    # Tempo minimo de leitura, sem invadir a proxima legenda.
+    for j, cue in enumerate(cues):
+        if cue["end"] - cue["start"] < MIN_CUE_SECONDS:
+            limite = (cues[j + 1]["start"] - 0.05) if j + 1 < len(cues) else cue["start"] + MIN_CUE_SECONDS
+            cue["end"] = max(cue["end"], min(cue["start"] + MIN_CUE_SECONDS, limite))
+    return cues
 
 
 def write_srt(segments: list[dict[str, Any]], path: Path) -> Path:
     lines = []
-    for i, seg in enumerate(_usable(segments), start=1):
+    for i, seg in enumerate(_resegment(_usable(segments)), start=1):
         lines.append(str(i))
         lines.append(f"{_fmt_srt(seg['start'])} --> {_fmt_srt(seg['end'])}")
         lines.append(wrap_text(seg["text"]))
@@ -242,7 +315,7 @@ Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackC
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     events = []
-    for seg in _usable(segments):
+    for seg in _resegment(_usable(segments)):
         if karaoke:
             text = _karaoke_text(seg["text"], seg["start"], seg["end"], max_chars, max_lines)
         else:
