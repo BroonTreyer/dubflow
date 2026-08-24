@@ -142,6 +142,16 @@ mantém nomes e jargão consistentes entre episódios do mesmo canal. Opcional.
   do TikTok, os posts saem como rascunho privado.
 - **Telegram** — envio direto ao canal; sujeito à regra de licença acima.
 
+### Venda no Telegram (bot de pagamento manual)
+
+Além da divulgação no canal, há um **bot de vendas** (`py -m bot`, ou `.\run.ps1`
+sobe junto). O cliente usa `/catalogo`, `/comprar <id>` ou `/assinar`; o bot cria um
+pedido e mostra sua chave Pix (`PIX_KEY`/`PIX_NAME` no `.env`, com `PRICE_EPISODE` e
+`PRICE_SUBSCRIPTION`). Você confirma o Pix recebido na aba **Vendas** do painel e o
+worker entrega automático — o episódio avulso, ou o acesso por assinatura
+(`SUBSCRIPTION_DAYS`). Só episódios com licença `licensed`/`owned`/`public_domain`
+entram no catálogo. O token do bot vem da aba **Conexões**.
+
 ## Transcrição: por que roda em subprocesso
 
 O `faster-whisper` roda num processo separado (`app/pipeline/_transcribe_worker.py`),

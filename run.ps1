@@ -3,7 +3,7 @@
 #   .\run.ps1 -Only web -> apenas o painel
 #   .\run.ps1 -Only worker -> apenas o worker
 
-param([ValidateSet('all', 'web', 'worker')][string]$Only = 'all')
+param([ValidateSet('all', 'web', 'worker', 'bot')][string]$Only = 'all')
 
 $root = $PSScriptRoot
 $python = Join-Path $root '.venv\Scripts\python.exe'
@@ -22,6 +22,13 @@ $env:PYTHONPATH = $root
 if ($Only -in @('all', 'worker')) {
     Start-Process -FilePath $python -ArgumentList '-m', 'worker' -WorkingDirectory $root
     Write-Host "worker iniciado"
+}
+
+if ($Only -in @('all', 'bot')) {
+    # Bot de vendas do Telegram (long-polling). So sobe se TELEGRAM_BOT_TOKEN estiver
+    # configurado; senao ele registra o aviso e encerra sozinho.
+    Start-Process -FilePath $python -ArgumentList '-m', 'bot' -WorkingDirectory $root
+    Write-Host "bot de vendas iniciado"
 }
 
 if ($Only -in @('all', 'web')) {

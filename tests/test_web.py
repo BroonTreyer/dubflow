@@ -266,6 +266,20 @@ def main() -> int:
     r = client.post(f"/orders/{oid3}/confirm", data={"csrf": "x"}, follow_redirects=False)
     check("confirmar sem csrf e recusado", r.status_code == 403, r.status_code)
 
+    print("bot de vendas (fatia 3)")
+    import bot
+    check("/start responde com os comandos", "/comprar" in bot._handle_text("/start", 900, "X"))
+    r = bot._handle_text("/comprar 1", 900, "Cliente")
+    check("/comprar cria pedido avulso e mostra o Pix", "Pedido" in r and "Pix" in r, r)
+    check("/comprar registra o pedido no banco",
+          any(o["kind"] == "episode" and str(o["buyer_tg_id"]) == "900" for o in db.list_orders()))
+    check("/comprar id inexistente avisa",
+          "catalogo" in bot._handle_text("/comprar 9999", 900, "X").lower())
+    r3 = bot._handle_text("/assinar", 901, "Y")
+    check("/assinar cria pedido de assinatura",
+          "Pedido" in r3 and any(o["kind"] == "subscription" and str(o["buyer_tg_id"]) == "901"
+                                 for o in db.list_orders()), r3)
+
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]
     db.update_post(pid, status="publishing")
