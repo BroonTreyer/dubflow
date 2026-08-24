@@ -28,6 +28,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    try:
+        return float((os.getenv(name, "").strip() or default))
+    except ValueError:
+        return default
+
+
 @dataclass
 class Settings:
     root: Path = ROOT
@@ -90,6 +97,13 @@ class Settings:
     # --- telegram ---
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_channel_id: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+
+    # --- venda no telegram (pagamento manual: voce confirma o Pix no painel) ---
+    pix_key: str = os.getenv("PIX_KEY", "")               # sua chave Pix, mostrada ao comprador
+    pix_name: str = os.getenv("PIX_NAME", "")             # nome do recebedor (aparece pro comprador)
+    price_episode: float = _float("PRICE_EPISODE", 9.90)  # valor por episodio avulso (BRL)
+    price_subscription: float = _float("PRICE_SUBSCRIPTION", 29.90)  # valor da assinatura (BRL)
+    subscription_days: int = _int("SUBSCRIPTION_DAYS", 30)  # duracao da assinatura
 
     # --- servidor ---
     port: int = _int("PORT", 8030)

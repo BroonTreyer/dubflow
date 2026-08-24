@@ -233,6 +233,30 @@ def main() -> int:
                 follow_redirects=False)
     check("vazio nao apaga o token", credentials.get("TIKTOK_ACCESS_TOKEN") == "tok-secreto-123")
 
+    print("venda no telegram (A2)")
+    from app import sales
+    comprador = "555001"
+    outro = "555002"
+    # Pedido avulso: cria pendente, sem acesso ainda.
+    oid = sales.create_episode_order(comprador, episode_id=7, buyer_name="Fulano")
+    ped = db.get_order(oid)
+    check("pedido criado pendente", ped["status"] == "pending" and ped["kind"] == "episode", ped)
+    check("valor do avulso gravado", abs((ped["amount"] or 0) - settings.price_episode) < 1e-6, ped["amount"])
+    check("sem acesso antes de pagar", sales.has_access(comprador, 7) is False)
+    # Confirma pagamento -> libera so aquele episodio, so pra esse comprador.
+    sales.confirm_payment(oid)
+    check("acesso ao episodio pago", sales.has_access(comprador, 7) is True)
+    check("nao libera outro episodio", sales.has_access(comprador, 99) is False)
+    check("nao libera outro comprador", sales.has_access(outro, 7) is False)
+    check("confirmar de novo nao quebra (idempotente)", sales.confirm_payment(oid)["status"] == "paid")
+    # Assinatura: confirma -> acesso a qualquer episodio enquanto ativa.
+    check("sem assinatura ativa no inicio", sales.subscription_active(outro) is False)
+    sid = sales.create_subscription_order(outro, buyer_name="Ciclana")
+    sales.confirm_payment(sid)
+    check("assinatura ativa apos pagar", sales.subscription_active(outro) is True)
+    check("assinante acessa qualquer episodio", sales.has_access(outro, 12345) is True)
+    check("pedidos pendentes listados", isinstance(db.list_orders(status="pending"), list))
+
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]
     db.update_post(pid, status="publishing")

@@ -106,9 +106,28 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    buyer_tg_id   TEXT NOT NULL,        -- id do chat/usuario no Telegram
+    buyer_name    TEXT,
+    kind          TEXT NOT NULL,        -- 'episode' | 'subscription'
+    episode_id    INTEGER,              -- nulo para assinatura
+    amount        REAL,                 -- valor cobrado em BRL (informativo)
+    status        TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|delivered|canceled
+    created_at    TEXT NOT NULL,
+    paid_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    buyer_tg_id   TEXT PRIMARY KEY,
+    expires_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_clips_episode ON clips(episode_id);
 CREATE INDEX IF NOT EXISTS idx_posts_clip ON posts(clip_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 """
 
 
@@ -425,3 +444,81 @@ def list_posts(episode_id: int) -> list[dict[str, Any]]:
             (episode_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- orders (vendas)
+
+ORDER_STATES = ("pending", "paid", "delivered", "canceled")
+ORDER_COLUMNS = {"buyer_name", "kind", "episode_id", "amount", "status", "paid_at"}
+
+
+def create_order(buyer_tg_id: str, kind: str, buyer_name: str | None = None,
+                 episode_id: int | None = None, amount: float | None = None) -> int:
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO orders (buyer_tg_id, buyer_name, kind, episode_id, amount, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (str(buyer_tg_id), buyer_name, kind, episode_id, amount, now()),
+        )
+        return int(cur.lastrowid)
+
+
+def get_order(order_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_order(order_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    _guard(fields, ORDER_COLUMNS, "orders")
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    with connect() as conn:
+        conn.execute(f"UPDATE orders SET {assignments} WHERE id = ?", (*fields.values(), order_id))
+
+
+def list_orders(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM orders WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def orders_delivered_episode(buyer_tg_id: str, episode_id: int) -> bool:
+    """Ja pagou (ou recebeu) este episodio avulso?"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM orders WHERE buyer_tg_id = ? AND kind = 'episode'"
+            "   AND episode_id = ? AND status IN ('paid', 'delivered') LIMIT 1",
+            (str(buyer_tg_id), episode_id),
+        ).fetchone()
+    return row is not None
+
+
+# ----------------------------------------------------------------- subscriptions (assinaturas)
+
+
+def get_subscription_expiry(buyer_tg_id: str) -> str | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM subscriptions WHERE buyer_tg_id = ?", (str(buyer_tg_id),)
+        ).fetchone()
+    return row["expires_at"] if row else None
+
+
+def set_subscription_expiry(buyer_tg_id: str, expires_at: str) -> None:
+    ts = now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO subscriptions (buyer_tg_id, expires_at, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(buyer_tg_id) DO UPDATE SET expires_at = excluded.expires_at,"
+            "   updated_at = excluded.updated_at",
+            (str(buyer_tg_id), expires_at, ts),
+        )
