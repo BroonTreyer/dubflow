@@ -72,6 +72,22 @@ def main() -> int:
           security.SESSION_COOKIE in r.cookies, r.status_code)
     check("home abre autenticado", client.get("/").status_code == 200)
 
+    print("rate limit de login (achado C2)")
+    security.clear_login_failures("testclient")
+    for _ in range(security.LOGIN_MAX_FAILS):
+        client.post("/login", data={"password": "errada"}, follow_redirects=False)
+    r = client.post("/login", data={"password": "errada"}, follow_redirects=False)
+    check("trava apos varias tentativas", "bloqueado=1" in r.headers.get("location", ""),
+          r.headers.get("location"))
+    r = client.post("/login", data={"password": "senha-de-teste"}, follow_redirects=False)
+    check("bloqueio vale ate com senha certa", "bloqueado=1" in r.headers.get("location", ""),
+          r.headers.get("location"))
+    security.clear_login_failures("testclient")
+    r = client.post("/login", data={"password": "senha-de-teste"}, follow_redirects=False)
+    check("apos limpar, login volta a funcionar",
+          r.status_code == 303 and "bloqueado" not in r.headers.get("location", ""),
+          r.headers.get("location"))
+
     print("csrf (achado 15)")
     r = client.post("/episodes", data={"url": "https://youtu.be/a", "csrf": "invalido"},
                     follow_redirects=False)

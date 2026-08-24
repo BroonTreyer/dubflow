@@ -107,6 +107,50 @@ def check_password(candidate: str) -> bool:
     return hmac.compare_digest(candidate.encode(), expected.encode())
 
 
+# ----------------------------------------------------------------- rate limit login
+#
+# O painel controla suas contas sociais e o acervo. Com uma senha unica, expor o
+# /login sem limite abre a porta para forca bruta no minuto em que o painel sai do
+# 127.0.0.1 (necessario para o Instagram buscar o video por URL). O contador em
+# memoria basta: e um painel de um usuario so, e reiniciar o processo zera tudo.
+
+LOGIN_WINDOW = 300     # janela de contagem, em segundos
+LOGIN_MAX_FAILS = 5    # falhas na janela antes de travar
+LOGIN_LOCKOUT = 300    # tempo de bloqueio apos estourar, em segundos
+
+_login_fails: dict[str, list[float]] = {}
+
+
+def _recent_fails(ip: str, now: float) -> list[float]:
+    fails = [t for t in _login_fails.get(ip, []) if now - t < LOGIN_WINDOW]
+    if fails:
+        _login_fails[ip] = fails
+    else:
+        _login_fails.pop(ip, None)
+    return fails
+
+
+def login_retry_after(ip: str) -> int:
+    """Segundos que faltam de bloqueio para este IP; 0 se pode tentar agora."""
+    now = time.time()
+    fails = _recent_fails(ip, now)
+    if len(fails) < LOGIN_MAX_FAILS:
+        return 0
+    liberado_em = fails[-1] + LOGIN_LOCKOUT
+    return max(0, int(liberado_em - now))
+
+
+def record_login_failure(ip: str) -> None:
+    now = time.time()
+    fails = _recent_fails(ip, now)
+    fails.append(now)
+    _login_fails[ip] = fails
+
+
+def clear_login_failures(ip: str) -> None:
+    _login_fails.pop(ip, None)
+
+
 # --------------------------------------------------------------------------- csrf
 
 

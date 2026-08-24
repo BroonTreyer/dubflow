@@ -9,6 +9,11 @@
     Senha incorreta.
   </div>
   {% endif %}
+  {% if bloqueado %}
+  <div class="note" style="border-color:var(--err);background:#1d1315;margin-bottom:14px">
+    Muitas tentativas. Aguarde alguns minutos antes de tentar de novo.
+  </div>
+  {% endif %}
   <form method="post" action="/login">
     <input type="password" name="password" placeholder="senha do painel" required autofocus
            style="width:100%;margin-bottom:12px">

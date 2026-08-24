@@ -66,24 +66,34 @@ def unauthorized(request: Request, exc: HTTPException):
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_form(request: Request, erro: str = ""):
-    return templates.TemplateResponse(request, "login.html", {"erro": erro})
+def login_form(request: Request, erro: str = "", bloqueado: str = ""):
+    return templates.TemplateResponse(request, "login.html", {"erro": erro, "bloqueado": bloqueado})
 
 
 @app.post("/login")
 def login(request: Request, password: str = Form(...)):
+    ip = request.client.host if request.client else "?"
+
+    espera = security.login_retry_after(ip)
+    if espera:
+        log.warning("login bloqueado por forca bruta de %s (%ds restantes)", ip, espera)
+        return RedirectResponse("/login?bloqueado=1", status_code=303,
+                                headers={"Retry-After": str(espera)})
+
     if not security.check_password(password):
-        log.warning("tentativa de login recusada de %s", request.client.host if request.client else "?")
+        security.record_login_failure(ip)
+        log.warning("tentativa de login recusada de %s", ip)
         return RedirectResponse("/login?erro=1", status_code=303)
 
+    security.clear_login_failures(ip)
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(
         security.SESSION_COOKIE,
         security.issue_session(),
         max_age=security.SESSION_TTL,
-        httponly=True,      # fora do alcance de JavaScript
-        samesite="lax",     # nao acompanha requisicoes vindas de outros sites
-        secure=False,       # troque para True atras de HTTPS
+        httponly=True,                    # fora do alcance de JavaScript
+        samesite="lax",                   # nao acompanha requisicoes de outros sites
+        secure=settings.cookie_secure,    # exige HTTPS quando o painel nao e local
     )
     return response
 

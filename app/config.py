@@ -31,6 +31,9 @@ class Settings:
     root: Path = ROOT
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("DATA_DIR") or ROOT / "data"))
     db_path: Path = field(init=False)
+    # Cookie de sessao exige HTTPS. Liga sozinho quando o painel nao e local (ao
+    # expor por tunel para o Instagram, o tunel ja da HTTPS); COOKIE_SECURE forca.
+    cookie_secure: bool = field(init=False)
 
     # --- pipeline ---
     whisper_model: str = os.getenv("WHISPER_MODEL", "large-v3")
@@ -95,6 +98,7 @@ class Settings:
     def __post_init__(self) -> None:
         self.data_dir = Path(self.data_dir)
         self.db_path = self.data_dir / "dubflow.db"
+        self.cookie_secure = _bool("COOKIE_SECURE", self.host not in ("127.0.0.1", "localhost"))
         for sub in ("episodes", "archive", "tmp", "logs"):
             (self.data_dir / sub).mkdir(parents=True, exist_ok=True)
 
