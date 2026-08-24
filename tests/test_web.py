@@ -54,6 +54,11 @@ def csrf_of(client: TestClient) -> str:
 
 def main() -> int:
     db.init_db()
+
+    print("infra (achado M5)")
+    check("log em arquivo criado", (settings.data_dir / "logs" / "web.log").exists(),
+          "web.log nao foi criado")
+
     anon = TestClient(app)
 
     print("autenticacao (achado 2)")

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -109,3 +111,32 @@ class Settings:
 
 
 settings = Settings()
+
+
+def configure_logging(component: str, level: int = logging.INFO) -> None:
+    """Loga no console e tambem em data/logs/<component>.log, com rotacao.
+
+    O worker roda headless numa janela separada; sem arquivo, o historico de
+    falhas some quando a janela fecha — e uma transcricao que trava de madrugada
+    fica sem rastro. O arquivo preserva o diagnostico. Rotaciona em 5 MB (3 backups)
+    para nao encher o disco.
+    """
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        log_dir = settings.data_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                log_dir / f"{component}.log",
+                maxBytes=5_000_000, backupCount=3, encoding="utf-8",
+            )
+        )
+    except OSError:
+        pass  # sem arquivo, ao menos o console continua
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,  # substitui qualquer basicConfig anterior
+    )

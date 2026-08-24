@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app import db, publishers
+from app.config import configure_logging
 from app.pipeline import runner
 
 # Titulos de video vem em qualquer alfabeto. Com o log redirecionado para arquivo,
@@ -22,9 +23,7 @@ from app.pipeline import runner
 # processamento — falha no logging, nao no pipeline.
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-)
+configure_logging("worker")
 log = logging.getLogger("worker")
 
 IDLE_SECONDS = 5
@@ -78,10 +77,12 @@ def run_publish_queue() -> bool:
     db.update_post(post["id"], status="publishing", attempts=attempts)
     caption = post.get("clip_caption") or ""
     title = post.get("clip_title")
+    thumb = post.get("clip_thumb")
+    thumb_path = Path(thumb) if thumb else None
     log.info("publicando post %s em %s/%s (tentativa %d)",
              post["id"], post["platform"], orientation, attempts)
 
-    result = publishers.publish(post["platform"], Path(clip_path), caption, title)
+    result = publishers.publish(post["platform"], Path(clip_path), caption, title, thumb_path)
     if result.ok:
         db.update_post(
             post["id"],

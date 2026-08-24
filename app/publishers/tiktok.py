@@ -29,7 +29,8 @@ def configured() -> bool:
     return bool(credentials.get("TIKTOK_ACCESS_TOKEN"))
 
 
-def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
+def publish(video_path: Path, caption: str, title: str | None = None,
+            thumb_path: Path | None = None) -> PublishResult:
     if not configured():
         return PublishResult(False, error="TikTok nao configurado (TIKTOK_ACCESS_TOKEN)")
 

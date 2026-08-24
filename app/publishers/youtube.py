@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 
 # Limites da API: titulo do YouTube tem no maximo 100 caracteres; o conjunto de
 # tags nao pode passar de 500. Ultrapassar qualquer um faz o insert falhar inteiro.
@@ -48,7 +49,8 @@ def configured() -> bool:
     )
 
 
-def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
+def publish(video_path: Path, caption: str, title: str | None = None,
+            thumb_path: Path | None = None) -> PublishResult:
     if not configured():
         return PublishResult(
             False,
@@ -68,7 +70,8 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
         )
 
     # Video vertical vira Short (#Shorts); horizontal vai como video comum.
-    yt_title, description, tags = _metadata(caption, title, is_short=_is_portrait(video_path))
+    is_short = _is_portrait(video_path)
+    yt_title, description, tags = _metadata(caption, title, is_short=is_short)
     title = yt_title
     size = video_path.stat().st_size
 
@@ -123,14 +126,38 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
         if not video_id:
             return PublishResult(False, error="upload aceito mas sem id de video na resposta")
 
-        return PublishResult(
-            True,
-            remote_id=video_id,
-            permalink=f"https://www.youtube.com/shorts/{video_id}",
-        )
+        # 3. Thumbnail (opcional, best-effort): nao reprova a publicacao se falhar.
+        if thumb_path is not None:
+            _set_thumbnail(token, video_id, Path(thumb_path))
+
+        url = (f"https://www.youtube.com/shorts/{video_id}" if is_short
+               else f"https://www.youtube.com/watch?v={video_id}")
+        return PublishResult(True, remote_id=video_id, permalink=url)
 
     except requests.RequestException as exc:
         return PublishResult(False, error=f"erro de rede: {exc}")
+
+
+def _set_thumbnail(token: str, video_id: str, thumb_path: Path) -> None:
+    """Define a thumbnail do video. Exige canal verificado; falha e so um aviso."""
+    if not thumb_path.exists():
+        return
+    try:
+        with thumb_path.open("rb") as fh:
+            response = requests.post(
+                THUMBNAIL_URL,
+                params={"videoId": video_id, "uploadType": "media"},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "image/jpeg"},
+                data=fh,
+                timeout=120,
+            )
+        if response.status_code != 200:
+            log.warning(
+                "thumbnail nao aplicada (HTTP %s) — o canal precisa ser verificado. %s",
+                response.status_code, response.text[:200],
+            )
+    except requests.RequestException as exc:
+        log.warning("thumbnail nao aplicada: %s", exc)
 
 
 def _access_token() -> str | None:

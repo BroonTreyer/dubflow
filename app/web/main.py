@@ -24,13 +24,11 @@ from fastapi.responses import (
 from fastapi.templating import Jinja2Templates
 
 from app import credentials, db, security
-from app.config import settings
+from app.config import configure_logging, settings
 from app.pipeline import archive
 from app.publishers import REGISTRY, status as publisher_status
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-)
+configure_logging("web")
 log = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent

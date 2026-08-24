@@ -395,7 +395,8 @@ def pending_posts() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT p.*, c.path AS clip_path, c.path_wide AS clip_path_wide,"
-            " c.caption AS clip_caption, c.title AS clip_title, c.episode_id"
+            " c.thumb_path AS clip_thumb, c.caption AS clip_caption,"
+            " c.title AS clip_title, c.episode_id"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"
             " WHERE p.status = 'pending'"
             "   AND p.attempts < ?"

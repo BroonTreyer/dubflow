@@ -16,11 +16,11 @@ REGISTRY = {
 
 
 def publish(platform: str, video_path: Path, caption: str,
-            title: str | None = None) -> PublishResult:
+            title: str | None = None, thumb_path: Path | None = None) -> PublishResult:
     module = REGISTRY.get(platform)
     if module is None:
         return PublishResult(False, error=f"plataforma desconhecida: {platform}")
-    return module.publish(Path(video_path), caption, title)
+    return module.publish(Path(video_path), caption, title, thumb_path)
 
 
 def status() -> dict[str, bool]:

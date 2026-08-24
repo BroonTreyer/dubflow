@@ -42,7 +42,8 @@ def public_url_for(video_path: Path) -> str:
     return f"{credentials.get("PUBLIC_BASE_URL").rstrip('/')}/media/{media_signature(name)}/{name}"
 
 
-def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
+def publish(video_path: Path, caption: str, title: str | None = None,
+            thumb_path: Path | None = None) -> PublishResult:
     if not configured():
         return PublishResult(False, error="Instagram nao configurado (IG_USER_ID/TOKEN/PUBLIC_BASE_URL)")
 
