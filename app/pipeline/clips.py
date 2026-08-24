@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,16 @@ from app.config import settings
 from app.pipeline import subtitles
 
 log = logging.getLogger(__name__)
+
+ASSETS = Path(__file__).parent / "assets"
+
+# Detectores de rosto, carregados uma vez. YuNet (DNN) e melhor — pega rosto de
+# lado e em angulo; o Haar frontal fica de reserva. Ambos tropecam em caminho com
+# acento no Windows, entao sao carregados de forma que contorna isso (ver abaixo).
+_CASCADE: Any = None
+_CASCADE_LOADED = False
+_YUNET: Any = None
+_YUNET_LOADED = False
 
 SELECTION_PROMPT = """\
 Voce e editor de conteudo social. Recebe a transcricao de um episodio com \
@@ -191,6 +203,177 @@ def _clip_segments(segments: list[dict[str, Any]], start: float, end: float) -> 
     return out
 
 
+def _load_cascade() -> Any:
+    """Carrega o detector Haar de rosto, uma vez, tolerando ausencia do opencv.
+
+    O XML e lido em Python (que abre caminhos Unicode) e passado ao OpenCV pela
+    memoria: no Windows o cv2 nao abre arquivos em caminhos com acento, e a pasta
+    do projeto ("Area de Trabalho") tem um. Sem isso, o detector nem carregaria.
+    """
+    global _CASCADE, _CASCADE_LOADED
+    if _CASCADE_LOADED:
+        return _CASCADE
+    _CASCADE_LOADED = True
+    try:
+        import cv2
+    except ImportError:
+        log.warning("opencv indisponivel; o reframe cai para o recorte central")
+        return None
+    try:
+        data = (ASSETS / "haarcascade_frontalface_default.xml").read_text(encoding="utf-8")
+        fs = cv2.FileStorage(data, cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
+        cascade = cv2.CascadeClassifier()
+        cascade.read(fs.getFirstTopLevelNode())
+        _CASCADE = None if cascade.empty() else cascade
+    except Exception as exc:  # noqa: BLE001 — deteccao e um luxo; nunca derruba o render
+        log.warning("falha ao carregar detector de rosto (%s); reframe central", exc)
+        _CASCADE = None
+    return _CASCADE
+
+
+def _load_yunet() -> Any:
+    """Carrega o detector YuNet (DNN), uma vez. None se o modelo/opencv faltar.
+
+    O cv2 abre o .onnx por caminho, e no Windows nao le caminho com acento; entao
+    copiamos o modelo para uma pasta temporaria ASCII e carregamos de la.
+    """
+    global _YUNET, _YUNET_LOADED
+    if _YUNET_LOADED:
+        return _YUNET
+    _YUNET_LOADED = True
+    model = ASSETS / "face_detection_yunet_2023mar.onnx"
+    if not model.exists():
+        return None
+    try:
+        import cv2
+        tmp = Path(tempfile.gettempdir()) / "dubflow_yunet_2023mar.onnx"
+        if not tmp.exists() or tmp.stat().st_size != model.stat().st_size:
+            shutil.copyfile(model, tmp)
+        _YUNET = cv2.FaceDetectorYN_create(str(tmp), "", (320, 320), score_threshold=0.6)
+    except Exception as exc:  # noqa: BLE001 — sem YuNet caimos no Haar
+        log.warning("YuNet indisponivel (%s); usando Haar", exc)
+        _YUNET = None
+    return _YUNET
+
+
+def _face_centers(img: Any) -> list[tuple[float, float]]:
+    """Devolve (centro_x_px, area) de cada rosto no frame — YuNet, senao Haar."""
+    import cv2
+
+    h, w = img.shape[:2]
+    yunet = _load_yunet()
+    if yunet is not None:
+        yunet.setInputSize((w, h))
+        _, faces = yunet.detect(img)
+        if faces is None:
+            return []
+        return [(float(f[0] + f[2] / 2), float(f[2] * f[3])) for f in faces]
+
+    cascade = _load_cascade()
+    if cascade is None:
+        return []
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = cascade.detectMultiScale(
+        gray, scaleFactor=1.1, minNeighbors=5,
+        minSize=(int(h * 0.08), int(h * 0.08)),
+    )
+    return [(float(x + fw / 2), float(fw * fh)) for (x, _y, fw, fh) in faces]
+
+
+def _focus_from_center(cx_norm: float, frame_w: int, frame_h: int) -> float:
+    """Converte o centro horizontal do rosto (0..1) na posicao da janela 9:16.
+
+    Devolve 0 (janela na esquerda), 0.5 (centro) ou 1 (direita). `r` e a fracao
+    da largura — ja escalada para cobrir 1080x1920 — que a janela vertical ocupa;
+    fora dessa faixa util o valor e travado para nao vazar do quadro.
+    """
+    if frame_w <= 0:
+        return 0.5
+    r = (1080 / 1920) * (frame_h / frame_w)
+    if r >= 1:  # fonte ja e 9:16 ou mais estreita: nao ha corte horizontal a fazer
+        return 0.5
+    focus = (cx_norm - r / 2) / (1 - r)
+    return max(0.0, min(1.0, focus))
+
+
+def _detect_focus(video_path: Path, start: float, duration: float) -> float | None:
+    """Amostra frames do trecho e devolve onde a janela 9:16 deve focar (0..1).
+
+    Devolve None quando nao ha como decidir (sem opencv, sem ffmpeg, ou nenhum
+    rosto encontrado) — o chamador entao usa o recorte central. Os frames saem
+    para uma pasta temporaria ASCII porque o cv2.imread tambem tropeca em acento.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return None
+    # Precisa de ao menos um detector (YuNet ou Haar); senao nao ha o que focar.
+    if _load_yunet() is None and _load_cascade() is None:
+        return None
+
+    n = max(4, min(12, int(duration / 3)))
+    rate = n / max(duration, 1.0)
+    with tempfile.TemporaryDirectory(prefix="dubflow_focus_") as td:
+        pattern = str(Path(td) / "f_%03d.jpg")
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", "-i", str(video_path),
+            # Reduz para 480 de largura: deteccao de rosto nao precisa de resolucao
+            # cheia e assim roda rapido mesmo em CPU.
+            "-vf", f"fps={rate:.4f},scale=480:-2", "-q:v", "4", pattern,
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
+        except OSError as exc:  # ffmpeg ausente do PATH, por exemplo
+            log.warning("ffmpeg indisponivel para deteccao (%s); reframe central", exc)
+            return None
+        if res.returncode != 0:
+            log.warning("extracao de frames para deteccao falhou; reframe central")
+            return None
+
+        soma_cx = 0.0
+        peso = 0.0
+        frame_w = frame_h = 0
+        for frame in sorted(Path(td).glob("f_*.jpg")):
+            img = cv2.imread(str(frame))
+            if img is None:
+                continue
+            frame_h, frame_w = img.shape[:2]
+            for cx, area in _face_centers(img):
+                # Pondera pela area: o rosto maior manda no enquadramento, o que
+                # mantem o corte estavel quando ha um rosto de fundo pequeno.
+                soma_cx += cx * area
+                peso += area
+
+    if peso <= 0 or frame_w == 0:
+        return None
+    return _focus_from_center((soma_cx / peso) / frame_w, frame_w, frame_h)
+
+
+def _reframe_filter(mode: str, focus: float, ass_path: Path) -> str:
+    """Monta o filtro do ffmpeg que leva o video a 9:16 e queima a legenda."""
+    sub = f"subtitles='{subtitles._escape_for_filter(ass_path)}'"
+    if mode == "pad":
+        # Legado: o video inteiro encolhido no meio de um fundo borrado. Nao foca
+        # na cena — a faixa util fica pequena entre duas barras desfocadas.
+        return (
+            "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=22:2[bg];"
+            "[0:v]scale=1080:-2[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[framed];"
+            f"[framed]{sub}[v]"
+        )
+    # face/center: recorta uma janela 9:16 que preenche a tela. `focus` desliza a
+    # janela na horizontal (0=esquerda, 0.5=centro, 1=direita); (in_w-out_w) e a
+    # folga real, entao o corte nunca sai do quadro.
+    return (
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"crop=1080:1920:x='(in_w-out_w)*{focus:.4f}':y='(in_h-out_h)/2'[framed];"
+        f"[framed]{sub}[v]"
+    )
+
+
 def render_clip(
     video_path: Path,
     segments: list[dict[str, Any]],
@@ -198,34 +381,38 @@ def render_clip(
     output_path: Path,
     work_dir: Path,
 ) -> Path:
-    """Corta o trecho, converte para 9:16 e queima a legenda social.
+    """Corta o trecho, converte para 9:16 focando na cena e queima a legenda.
 
-    O reframe usa `crop` centralizado sobre um fundo desfocado do proprio video:
-    o assunto continua legivel e o quadro nao fica com barras pretas.
+    O reframe (CLIP_REFRAME) recorta uma janela vertical que preenche a tela: em
+    'face' a janela e posicionada sobre o rosto detectado; em 'center' fica no
+    meio; 'pad' mantem o encaixe antigo com fundo borrado.
     """
     start, end = float(clip["start"]), float(clip["end"])
     duration = end - start
 
+    karaoke = settings.clip_karaoke
     ass_path = work_dir / f"clip_{output_path.stem}.ass"
     subtitles.write_ass(
         _clip_segments(segments, start, end),
         ass_path,
         width=1080,
         height=1920,
-        style=subtitles.STYLE_CLIP,
+        style=subtitles.STYLE_CLIP_KARAOKE if karaoke else subtitles.STYLE_CLIP,
         max_chars=subtitles.CLIP_MAX_CHARS_PER_LINE,
         max_lines=subtitles.CLIP_MAX_LINES,
+        karaoke=karaoke,
     )
 
-    # Fundo: o video ampliado e desfocado ocupando 1080x1920.
-    # Frente: o video inteiro encaixado na largura, centralizado na vertical.
-    filter_complex = (
-        "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920,boxblur=22:2[bg];"
-        "[0:v]scale=1080:-2[fg];"
-        "[bg][fg]overlay=(W-w)/2:(H-h)/2[framed];"
-        f"[framed]subtitles='{subtitles._escape_for_filter(ass_path)}'[v]"
-    )
+    mode = settings.clip_reframe
+    focus = 0.5
+    if mode == "face":
+        detected = _detect_focus(video_path, start, duration)
+        # Sem rosto (ou sem detector), cai para o centro: preenche a tela do mesmo
+        # jeito, so nao segue o rosto.
+        mode = "center" if detected is None else "face"
+        focus = 0.5 if detected is None else detected
+
+    filter_complex = _reframe_filter(mode, focus, ass_path)
 
     cmd = [
         "ffmpeg", "-y",
@@ -234,11 +421,96 @@ def render_clip(
         "-map", "[v]", "-map", "0:a?",
         "-c:v", "libx264", "-preset", "medium", "-crf", "21",
         "-r", "30", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+        *_audio_args(),
         "-movflags", "+faststart",
         str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(f"render do corte falhou: {result.stderr.strip()[-800:]}")
+    return output_path
+
+
+def _audio_args() -> list[str]:
+    """Args de audio comuns aos renders. Normaliza o volume quando ativado.
+
+    loudnorm mira -14 LUFS (o alvo de YouTube/streaming): sem isso, cada corte sai
+    com um volume, e um feed de cortes fica com gente subindo e descendo o som.
+    """
+    args = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"] if settings.audio_loudnorm else []
+    return [*args, "-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
+
+
+def render_clip_wide(
+    video_path: Path,
+    segments: list[dict[str, Any]],
+    clip: dict[str, Any],
+    output_path: Path,
+    work_dir: Path,
+) -> Path:
+    """Renderiza a versao horizontal 16:9 do mesmo trecho, para o YouTube comum.
+
+    Mantem o quadro original encaixado em 1920x1080 (sem recorte) e queima a
+    legenda no estilo do episodio. Serve para publicar o corte como video normal,
+    nao como Short.
+    """
+    start, end = float(clip["start"]), float(clip["end"])
+    duration = end - start
+
+    ass_path = work_dir / f"clip_{output_path.stem}_wide.ass"
+    subtitles.write_ass(
+        _clip_segments(segments, start, end),
+        ass_path,
+        width=1920,
+        height=1080,
+        style=subtitles.STYLE_EPISODE,
+    )
+
+    # decrease + pad: o quadro inteiro cabe em 16:9; fonte de origem ja landscape
+    # preenche exato, uma fonte mais estreita ganha faixas laterais em vez de corte.
+    filter_complex = (
+        "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,"
+        "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,"
+        f"subtitles='{subtitles._escape_for_filter(ass_path)}'[v]"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", "-i", str(video_path),
+        "-filter_complex", filter_complex,
+        "-map", "[v]", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+        "-r", "30", "-pix_fmt", "yuv420p",
+        *_audio_args(),
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError(f"render do corte horizontal falhou: {result.stderr.strip()[-800:]}")
+    return output_path
+
+
+def make_thumbnail(video_path: Path, clip: dict[str, Any], output_path: Path) -> Path | None:
+    """Extrai um frame do meio do trecho como thumbnail 1280x720 (16:9).
+
+    Nunca derruba o pipeline: e um extra, entao qualquer falha vira None e o corte
+    segue sem thumbnail.
+    """
+    start, end = float(clip["start"]), float(clip["end"])
+    meio = start + (end - start) / 2
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{meio:.2f}", "-i", str(video_path), "-frames:v", "1",
+        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
+        "-q:v", "3", str(output_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.warning("ffmpeg indisponivel para thumbnail (%s)", exc)
+        return None
+    if result.returncode != 0 or not output_path.exists():
+        log.warning("thumbnail do corte falhou: %s", result.stderr.strip()[-300:])
+        return None
     return output_path

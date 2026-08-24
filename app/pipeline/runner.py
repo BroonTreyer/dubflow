@@ -24,6 +24,42 @@ def _set(episode_id: int, status: str, progress: float, **extra: Any) -> None:
     log.info("[ep %s] %s (%.0f%%)", episode_id, status, progress * 100)
 
 
+def _render_variants(
+    episode_id: int,
+    clip_id: int,
+    clip: dict[str, Any],
+    video_path: Path,
+    translated: list[dict[str, Any]],
+    clip_dir: Path,
+    idx: int,
+    work_dir: Path,
+) -> None:
+    """Renderiza o corte vertical (obrigatorio) e, se ativados, a versao horizontal
+    e a thumbnail (ambos best-effort — falha neles nao reprova o corte).
+
+    Levanta RuntimeError so se o corte vertical falhar; o chamador marca 'failed'.
+    """
+    nome = f"ep{episode_id:05d}_corte_{idx:02d}"
+    vertical = clips.render_clip(video_path, translated, clip, clip_dir / f"{nome}.mp4", work_dir)
+    fields: dict[str, Any] = {"path": str(vertical), "status": "ready"}
+
+    if settings.clip_render_wide:
+        try:
+            wide = clips.render_clip_wide(
+                video_path, translated, clip, clip_dir / f"{nome}_wide.mp4", work_dir
+            )
+            fields["path_wide"] = str(wide)
+        except RuntimeError as exc:
+            log.warning("[ep %s] corte %d: versao horizontal falhou: %s", episode_id, idx, exc)
+
+    if settings.clip_thumbnail:
+        thumb = clips.make_thumbnail(video_path, clip, clip_dir / f"{nome}.jpg")
+        if thumb is not None:
+            fields["thumb_path"] = str(thumb)
+
+    db.update_clip(clip_id, **fields)
+
+
 def process_episode(episode_id: int) -> dict[str, Any]:
     episode = db.get_episode(episode_id)
     if episode is None:
@@ -125,18 +161,13 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         clip_dir = work_dir / "clips"
         clip_dir.mkdir(exist_ok=True)
         for i, (clip_id, clip) in enumerate(zip(clip_ids, selected)):
+            # O id do episodio entra no nome do arquivo: sem isso todos os episodios
+            # tem "corte_01.mp4" e a rota /media, que resolve por nome, serve o corte
+            # de outro episodio.
             try:
-                out = clips.render_clip(
-                    video_path,
-                    translated,
-                    clip,
-                    # O id do episodio entra no nome do arquivo: sem isso todos os
-                    # episodios tem "corte_01.mp4" e a rota /media, que resolve por
-                    # nome, serve o corte de outro episodio.
-                    clip_dir / f"ep{episode_id:05d}_corte_{i + 1:02d}.mp4",
-                    work_dir,
+                _render_variants(
+                    episode_id, clip_id, clip, video_path, translated, clip_dir, i + 1, work_dir
                 )
-                db.update_clip(clip_id, path=str(out), status="ready")
             except RuntimeError as exc:
                 log.error("[ep %s] corte %d falhou: %s", episode_id, i + 1, exc)
                 db.update_clip(clip_id, status="failed")
@@ -229,10 +260,11 @@ def rerender_clips(episode_id: int) -> int:
     _set(episode_id, "clipping", 0.8)
     refeitos = 0
     for i, clip in enumerate(existentes):
-        destino = clip_dir / f"ep{episode_id:05d}_corte_{clip['idx'] + 1:02d}.mp4"
         try:
-            clips.render_clip(video, translated, clip, destino, work_dir)
-            db.update_clip(clip["id"], path=str(destino), status="ready")
+            _render_variants(
+                episode_id, clip["id"], clip, video, translated, clip_dir,
+                clip["idx"] + 1, work_dir,
+            )
             refeitos += 1
         except RuntimeError as exc:
             log.error("[ep %s] corte %d falhou no re-render: %s", episode_id, i + 1, exc)

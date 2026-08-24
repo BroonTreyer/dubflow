@@ -209,6 +209,7 @@ def request_action(request: Request, episode_id: int,
 
 @app.post("/clips/{clip_id}/publish", dependencies=panel)
 def schedule_publish(request: Request, clip_id: int, platform: str = Form(...),
+                     orientation: str = Form("vertical"),
                      scheduled_at: str = Form(""), csrf: str = Form("")):
     security.require_csrf(request, csrf)
 
@@ -219,8 +220,12 @@ def schedule_publish(request: Request, clip_id: int, platform: str = Form(...),
         raise HTTPException(400, "corte ainda nao foi renderizado")
     if platform not in REGISTRY:
         raise HTTPException(400, f"plataforma desconhecida: {platform}")
+    if orientation not in ("vertical", "horizontal"):
+        raise HTTPException(400, "orientacao invalida")
+    if orientation == "horizontal" and not clip.get("path_wide"):
+        raise HTTPException(400, "este corte nao tem versao horizontal (16:9) renderizada")
 
-    db.create_post(clip_id, platform, _parse_schedule(scheduled_at))
+    db.create_post(clip_id, platform, _parse_schedule(scheduled_at), orientation)
     return RedirectResponse(f"/episodes/{clip['episode_id']}", status_code=303)
 
 
@@ -322,7 +327,8 @@ def media(signature: str, filename: str):
     # Cinto e suspensorio: mesmo com nome saneado, so servimos de dentro do acervo.
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise HTTPException(404, "arquivo nao encontrado")
-    return FileResponse(resolved, media_type="video/mp4")
+    media_type = "image/jpeg" if resolved.suffix.lower() in (".jpg", ".jpeg") else "video/mp4"
+    return FileResponse(resolved, media_type=media_type)
 
 
 def _episode_dir_from_clip_name(name: str) -> Path | None:

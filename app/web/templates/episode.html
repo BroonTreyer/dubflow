@@ -140,6 +140,11 @@
         {{ clip.start | round(0) | int }}s &rarr; {{ clip.end | round(0) | int }}s ·
         nota {{ clip.score | round(1) }} ·
         <span class="tag {% if clip.status == 'ready' %}done{% elif clip.status == 'failed' %}failed{% endif %}">{{ clip.status }}</span>
+        {% if clip.path_wide %} · <span title="tem versão horizontal 16:9">16:9 ✓</span>{% endif %}
+        {% if clip.thumb_path %}
+        {% set tnome = clip.thumb_path.split('\\')[-1].split('/')[-1] %}
+        · <a href="/media/{{ media_sig(tnome) }}/{{ tnome }}" target="_blank">thumb</a>
+        {% endif %}
       </p>
       {% if clip.caption %}
       <details class="muted"><summary>legenda</summary><pre style="white-space:pre-wrap">{{ clip.caption }}</pre></details>
@@ -155,6 +160,12 @@
             {{ platform }}{{ '' if ready else ' (sem credenciais)' }}
           </option>
           {% endfor %}
+        </select>
+        <select name="orientation" title="orientação — horizontal só vale para o YouTube">
+          <option value="vertical">vertical 9:16</option>
+          <option value="horizontal" {% if not clip.path_wide %}disabled{% endif %}>
+            horizontal 16:9{{ '' if clip.path_wide else ' (não gerado)' }}
+          </option>
         </select>
         <button type="submit" class="ghost">Enfileirar</button>
       </form>
@@ -175,7 +186,7 @@
     {% for post in posts %}
     <tr>
       <td class="muted">#{{ post.clip_idx + 1 }}</td>
-      <td>{{ post.platform }}</td>
+      <td>{{ post.platform }}{% if post.orientation == 'horizontal' %} <span class="muted">16:9</span>{% endif %}</td>
       <td><span class="tag {% if post.status == 'published' %}done{% elif post.status == 'failed' %}failed{% endif %}">{{ post.status }}</span></td>
       <td>{% if post.permalink %}<a href="{{ post.permalink }}" target="_blank">abrir</a>{% else %}—{% endif %}</td>
       <td class="muted">{{ post.error or '' }}</td>

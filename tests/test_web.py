@@ -155,6 +155,39 @@ def main() -> int:
                     follow_redirects=False)
     check("sem agendamento entra na fila", len(db.pending_posts()) == 1)
 
+    print("canal de cortes (youtube)")
+    from app.publishers import REGISTRY
+    from app.publishers import status as publisher_status
+    estado = publisher_status()
+    check("youtube registrado", "youtube" in REGISTRY)
+    check("youtube aparece no painel", "youtube" in estado)
+    check("youtube sem credenciais fica desabilitado", estado.get("youtube") is False, estado)
+    r = client.post(f"/clips/{cids[0]}/publish", data={"platform": "youtube", "csrf": token},
+                    follow_redirects=False)
+    check("aceita youtube na fila", r.status_code == 303, r.status_code)
+
+    print("orientacao horizontal (16:9)")
+    # Sem versao 16:9 renderizada, publicar horizontal e recusado.
+    r = client.post(f"/clips/{cids[0]}/publish",
+                    data={"platform": "youtube", "orientation": "horizontal", "csrf": token},
+                    follow_redirects=False)
+    check("horizontal sem 16:9 e recusado", r.status_code == 400, r.status_code)
+    db.update_clip(cids[0], path_wide=str(_tmp / "f_wide.mp4"))
+    r = client.post(f"/clips/{cids[0]}/publish",
+                    data={"platform": "youtube", "orientation": "horizontal", "csrf": token},
+                    follow_redirects=False)
+    check("horizontal com 16:9 e aceito", r.status_code == 303, r.status_code)
+
+    yt = [p for p in db.pending_posts() if p["platform"] == "youtube"]
+    check("youtube entrou na fila (vertical + horizontal)", len(yt) == 2, len(yt))
+    check("orientacao gravada",
+          sorted(p["orientation"] for p in yt) == ["horizontal", "vertical"],
+          [p["orientation"] for p in yt])
+    # Neutraliza os posts de youtube para nao alterar as contagens seguintes.
+    for p in yt:
+        db.update_post(p["id"], status="failed")
+    check("fila volta a ter so o telegram", len(db.pending_posts()) == 1, len(db.pending_posts()))
+
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]
     db.update_post(pid, status="publishing")

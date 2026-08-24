@@ -53,6 +53,14 @@ STYLE_CLIP = (
     "-1,0,0,0,100,100,0,0,1,5.0,2.5,2,70,70,260,1"
 )
 
+# Versao karaoke do corte: a palavra "ja falada" fica amarela (PrimaryColour) e a
+# ainda nao falada fica branca (SecondaryColour) — o \kf preenche uma na outra no
+# tempo da fala. So a cor muda em relacao ao STYLE_CLIP; tamanho e margem seguem iguais.
+STYLE_CLIP_KARAOKE = (
+    "Style: Default,Arial Black,68,&H0000FFFF,&H00FFFFFF,&H00000000,&HC0000000,"
+    "-1,0,0,0,100,100,0,0,1,5.0,2.5,2,70,70,260,1"
+)
+
 
 def _fmt_srt(seconds: float) -> str:
     if seconds < 0:
@@ -120,6 +128,57 @@ def wrap_text(text: str, max_chars: int = MAX_CHARS_PER_LINE, max_lines: int = M
     return "\n".join(lines)
 
 
+def _distribute_cs(words: list[str], total_cs: int) -> list[int]:
+    """Reparte a duracao do segmento (centesimos de s) entre as palavras.
+
+    Nao temos timestamp por palavra na traducao — o whisper marca as palavras no
+    idioma de origem, que nao casam 1:1 com o pt-BR. Entao dividimos o tempo do
+    segmento em proporcao ao tamanho de cada palavra, o que da um karaoke suave e
+    fiel ao ritmo da fala. A soma bate exatamente com `total_cs`.
+    """
+    if not words:
+        return []
+    total_cs = max(len(words), total_cs)  # ao menos 1cs por palavra
+    weights = [len(w) + 1 for w in words]
+    tw = sum(weights)
+    raw = [max(1, round(total_cs * w / tw)) for w in weights]
+    diff = total_cs - sum(raw)
+    i = 0
+    guard = 10 * len(raw) + abs(diff) + 10
+    while diff != 0 and i < guard:
+        j = i % len(raw)
+        if diff > 0:
+            raw[j] += 1
+            diff -= 1
+        elif raw[j] > 1:
+            raw[j] -= 1
+            diff += 1
+        i += 1
+    return raw
+
+
+def _karaoke_text(text: str, start: float, end: float, max_chars: int, max_lines: int) -> str:
+    """Monta o campo Text do ASS com tags \\kf, mantendo a mesma quebra de linha."""
+    wrapped = wrap_text(escape_ass(text), max_chars, max_lines)
+    lines = wrapped.split("\n")
+    words = [w for line in lines for w in line.split(" ") if w]
+    if not words:
+        return wrapped.replace("\n", "\\N")
+
+    durations = _distribute_cs(words, int(round((end - start) * 100)))
+    rendered: list[str] = []
+    idx = 0
+    for line in lines:
+        parts = []
+        for word in line.split(" "):
+            if not word:
+                continue
+            parts.append(f"{{\\kf{durations[idx]}}}{word}")
+            idx += 1
+        rendered.append(" ".join(parts))
+    return "\\N".join(rendered)
+
+
 def escape_ass(text: str) -> str:
     """Neutraliza a sintaxe do ASS dentro do texto da legenda.
 
@@ -166,6 +225,7 @@ def write_ass(
     style: str = STYLE_EPISODE,
     max_chars: int = MAX_CHARS_PER_LINE,
     max_lines: int = MAX_LINES,
+    karaoke: bool = False,
 ) -> Path:
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -183,8 +243,11 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     events = []
     for seg in _usable(segments):
-        # Escapa antes de quebrar: o \N da quebra de linha e sintaxe nossa, nao do texto.
-        text = wrap_text(escape_ass(seg["text"]), max_chars, max_lines).replace("\n", "\\N")
+        if karaoke:
+            text = _karaoke_text(seg["text"], seg["start"], seg["end"], max_chars, max_lines)
+        else:
+            # Escapa antes de quebrar: o \N da quebra de linha e sintaxe nossa, nao do texto.
+            text = wrap_text(escape_ass(seg["text"]), max_chars, max_lines).replace("\n", "\\N")
         events.append(
             f"Dialogue: 0,{_fmt_ass(seg['start'])},{_fmt_ass(seg['end'])},Default,,0,0,0,,{text}"
         )

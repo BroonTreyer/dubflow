@@ -41,9 +41,10 @@ EPISODE_COLUMNS = {
 # worker: queimar a legenda no video inteiro, ou refazer os cortes (util depois
 # de mudar o estilo da legenda).
 ACTIONS = ("burn", "rerender_clips")
-CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "score", "path", "status"}
-POST_COLUMNS = {"platform", "status", "remote_id", "permalink", "error", "scheduled_at",
-                "posted_at", "attempts"}
+CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "score", "path",
+                "path_wide", "thumb_path", "status"}
+POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
+                "scheduled_at", "posted_at", "attempts"}
 
 
 def _guard(fields: dict[str, Any], allowed: set[str], table: str) -> None:
@@ -82,6 +83,8 @@ CREATE TABLE IF NOT EXISTS clips (
     caption      TEXT,
     score        REAL,
     path         TEXT,
+    path_wide    TEXT,
+    thumb_path   TEXT,
     status       TEXT NOT NULL DEFAULT 'pending',
     created_at   TEXT NOT NULL
 );
@@ -90,6 +93,7 @@ CREATE TABLE IF NOT EXISTS posts (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     clip_id      INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
     platform     TEXT NOT NULL,
+    orientation  TEXT NOT NULL DEFAULT 'vertical',
     status       TEXT NOT NULL DEFAULT 'pending',
     remote_id    TEXT,
     permalink    TEXT,
@@ -134,6 +138,19 @@ def init_db() -> None:
         ep_columns = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
         if "pending_action" not in ep_columns:
             conn.execute("ALTER TABLE episodes ADD COLUMN pending_action TEXT")
+
+        # Migracoes das colunas de corte horizontal, thumbnail e orientacao do post.
+        clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
+        if "path_wide" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN path_wide TEXT")
+        if "thumb_path" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_path TEXT")
+
+        post_columns = {r["name"] for r in conn.execute("PRAGMA table_info(posts)")}
+        if "orientation" not in post_columns:
+            conn.execute(
+                "ALTER TABLE posts ADD COLUMN orientation TEXT NOT NULL DEFAULT 'vertical'"
+            )
 
 
 def request_action(episode_id: int, action: str) -> None:
@@ -351,11 +368,13 @@ def get_clip(clip_id: int) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------- posts
 
 
-def create_post(clip_id: int, platform: str, scheduled_at: str | None = None) -> int:
+def create_post(clip_id: int, platform: str, scheduled_at: str | None = None,
+                orientation: str = "vertical") -> int:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO posts (clip_id, platform, scheduled_at, created_at) VALUES (?, ?, ?, ?)",
-            (clip_id, platform, scheduled_at, now()),
+            "INSERT INTO posts (clip_id, platform, orientation, scheduled_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (clip_id, platform, orientation, scheduled_at, now()),
         )
         return int(cur.lastrowid)
 
@@ -375,7 +394,8 @@ MAX_PUBLISH_ATTEMPTS = 4
 def pending_posts() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT p.*, c.path AS clip_path, c.caption AS clip_caption, c.episode_id"
+            "SELECT p.*, c.path AS clip_path, c.path_wide AS clip_path_wide,"
+            " c.caption AS clip_caption, c.title AS clip_title, c.episode_id"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"
             " WHERE p.status = 'pending'"
             "   AND p.attempts < ?"

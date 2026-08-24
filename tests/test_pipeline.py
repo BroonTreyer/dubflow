@@ -9,6 +9,7 @@ import pathlib
 import sys
 
 from app.pipeline import clips, subtitles, translate
+from app.publishers import youtube
 
 failures: list[str] = []
 
@@ -230,6 +231,109 @@ def test_subtitle_styles() -> None:
           all(len(l) <= subtitles.CLIP_MAX_CHARS_PER_LINE for l in linhas), linhas)
 
 
+def test_karaoke(tmp: pathlib.Path) -> None:
+    """Karaoke: cada palavra ganha uma duracao e a soma bate com o segmento."""
+    print("legendas / karaoke")
+
+    durs = subtitles._distribute_cs(["uma", "frase", "de", "teste"], 300)
+    check("soma bate com o total", sum(durs) == 300, durs)
+    check("uma duracao por palavra", len(durs) == 4, durs)
+    check("nenhuma duracao zerada", all(d >= 1 for d in durs), durs)
+    check("total minusculo nao quebra", sum(subtitles._distribute_cs(["a", "b", "c"], 1)) >= 3)
+
+    txt = subtitles._karaoke_text(
+        "uma frase simples de teste", 0.0, 2.0,
+        subtitles.CLIP_MAX_CHARS_PER_LINE, subtitles.CLIP_MAX_LINES,
+    )
+    check("uma tag kf por palavra", txt.count("\\kf") == 5, txt)
+    check("mantem as palavras",
+          all(w in txt for w in ["uma", "frase", "simples", "de", "teste"]), txt)
+
+    segs = [{"start": 0, "end": 2, "text": "palavra um dois tres"}]
+    komp = subtitles.write_ass(
+        segs, tmp / "k.ass", width=1080, height=1920,
+        style=subtitles.STYLE_CLIP_KARAOKE, max_chars=subtitles.CLIP_MAX_CHARS_PER_LINE,
+        max_lines=subtitles.CLIP_MAX_LINES, karaoke=True,
+    ).read_text(encoding="utf-8")
+    check("ass karaoke tem kf e Dialogue", "\\kf" in komp and "Dialogue" in komp, komp[-80:])
+    plano = subtitles.write_ass(segs, tmp / "p.ass", karaoke=False).read_text(encoding="utf-8")
+    check("ass normal nao tem kf", "\\kf" not in plano)
+
+
+def test_reframe_focus() -> None:
+    """A janela 9:16 tem que seguir o rosto sem vazar do quadro (achado deste ciclo)."""
+    print("cortes / foco do recorte 9:16")
+
+    # Fonte 16:9 (1920x1080): rosto no centro deixa a janela no centro.
+    meio = clips._focus_from_center(0.5, 1920, 1080)
+    check("rosto central -> janela central", abs(meio - 0.5) < 1e-6, meio)
+
+    # Rosto a esquerda puxa a janela para a esquerda; a direita, para a direita.
+    esq = clips._focus_from_center(0.2, 1920, 1080)
+    dir_ = clips._focus_from_center(0.85, 1920, 1080)
+    check("rosto a esquerda puxa a janela", 0.0 <= esq < 0.5, esq)
+    check("rosto a direita puxa a janela", 0.5 < dir_ <= 1.0, dir_)
+
+    # Nunca sai de [0, 1], mesmo com o rosto colado na borda.
+    check("trava na esquerda", clips._focus_from_center(0.0, 1920, 1080) == 0.0)
+    check("trava na direita", clips._focus_from_center(1.0, 1920, 1080) == 1.0)
+
+    # Fonte ja vertical (mais alta que 9:16): nao ha corte horizontal, fica no centro.
+    check("fonte vertical fica no centro", clips._focus_from_center(0.2, 1080, 1920) == 0.5)
+    check("largura invalida nao quebra", clips._focus_from_center(0.5, 0, 0) == 0.5)
+
+    # O filtro central e o com foco produzem um crop que preenche a tela (sem barras).
+    ass = pathlib.Path("x.ass")
+    central = clips._reframe_filter("center", 0.5, ass)
+    face = clips._reframe_filter("face", 0.83, ass)
+    check("center preenche a tela (crop, sem overlay)",
+          "crop=1080:1920:x=" in central and "overlay" not in central, central)
+    check("foco entra no filtro", "0.8300" in face, face)
+    check("pad continua disponivel como legado", "overlay" in clips._reframe_filter("pad", 0.5, ass))
+
+
+def test_youtube_metadata() -> None:
+    """O worker so passa a caption; o publisher deriva titulo/descricao/tags dela."""
+    print("youtube / metadados do Short")
+
+    caption = (
+        "O erro que quebra 9 em cada 10 startups\n"
+        "Ele fala sobre gastar antes de validar\n"
+        "#startup #empreendedorismo #negocios"
+    )
+    title, description, tags = youtube._metadata(caption, None, is_short=True)
+
+    # Sem title do corte, a primeira linha (o gancho) vira titulo.
+    check("titulo cai na primeira linha", title == "O erro que quebra 9 em cada 10 startups", title)
+    check("descricao mantem a legenda", description.startswith("O erro que quebra"), description[:30])
+    check("tags saem das hashtags", tags == ["startup", "empreendedorismo", "negocios"], tags)
+
+    # Com title do corte (escolhido pela Claude), ele manda no titulo do YouTube.
+    real = youtube._metadata(caption, "Titulo Escolhido", is_short=True)[0]
+    check("usa o title do corte quando existe", real == "Titulo Escolhido", real)
+
+    # #Shorts entra na descricao de Short, mas nao no video horizontal.
+    check("shorts no vertical", "#Shorts" in description, description[-20:])
+    wide = youtube._metadata(caption, None, is_short=False)[1]
+    check("sem shorts no horizontal", "#shorts" not in wide.lower(), wide[-20:])
+    ja_tem = youtube._metadata("Gancho\n#Shorts", None, is_short=True)[1]
+    check("nao duplica shorts", ja_tem.lower().count("#shorts") == 1, ja_tem)
+    check("shorts nao vira tag", "shorts" not in [t.lower() for t in tags], tags)
+
+    # Limites da API: titulo <= 100 chars, sem < ou >.
+    longo = youtube._metadata("x" * 250, None, is_short=True)[0]
+    check("titulo respeita 100 chars", len(longo) <= youtube.TITLE_MAX, len(longo))
+    perigoso = youtube._metadata("um <script> qualquer", None, is_short=True)[0]
+    check("titulo sem < e >", "<" not in perigoso and ">" not in perigoso, perigoso)
+
+    # Legenda e title vazios nao podem gerar titulo vazio (a API recusa).
+    vazio = youtube._metadata("", None, is_short=True)[0]
+    check("titulo nunca vazio", vazio != "", vazio)
+
+    # Sem credenciais no ambiente de teste, o publisher se declara nao configurado.
+    check("nao configurado sem credenciais", youtube.configured() is False)
+
+
 def main() -> int:
     tmp = pathlib.Path(__file__).parent / "_tmp"
     tmp.mkdir(exist_ok=True)
@@ -247,6 +351,9 @@ def main() -> int:
     test_ffmpeg_quote_escape()
     test_transcribe_modes()
     test_subtitle_styles()
+    test_karaoke(tmp)
+    test_reframe_focus()
+    test_youtube_metadata()
 
     print()
     if failures:

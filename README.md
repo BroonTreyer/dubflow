@@ -115,6 +115,11 @@ terceiro. O flag mantém o caminho legítimo como o padrão sem travar seu teste
 | `TRANSLATE_EFFORT` | `medium` | Profundidade de raciocínio |
 | `USE_BATCH_API` | `false` | Metade do preço, sem garantia de latência |
 | `CLIPS_PER_EPISODE` | `5` | Quantos cortes por episódio |
+| `CLIP_REFRAME` | `face` | Enquadramento 9:16: `face` / `center` / `pad` (legado) |
+| `CLIP_KARAOKE` | `true` | Legenda karaokê (palavra destacada no tempo da fala) |
+| `CLIP_RENDER_WIDE` | `true` | Renderiza também a versão 16:9 (YouTube horizontal) |
+| `CLIP_THUMBNAIL` | `true` | Gera thumbnail 16:9 de cada corte |
+| `AUDIO_LOUDNORM` | `true` | Normaliza o volume dos cortes (-14 LUFS) |
 | `BURN_FULL_EPISODE` | `false` | Queimar legenda no episódio inteiro (lento) |
 | `ARCHIVE_DIR` | `data/archive` | Aponte para o Drive sincronizado |
 | `WHISPER_COMPUTE` | `float16` | Use `int8_float16` se faltar VRAM |
@@ -126,6 +131,10 @@ mantém nomes e jargão consistentes entre episódios do mesmo canal. Opcional.
 
 ## Publicação
 
+- **YouTube** — upload direto via Data API v3 (OAuth2; rode `scripts/youtube_auth.py`
+  uma vez para gerar o refresh token). Vídeo vertical vira **Short**; escolhendo a
+  orientação horizontal no painel, o corte 16:9 sobe como **vídeo comum**. Privacidade
+  `private` por padrão (`YOUTUBE_PRIVACY`).
 - **Instagram** — a Graph API não aceita upload: ela busca o vídeo por URL.
   `PUBLIC_BASE_URL` precisa apontar para este servidor acessível pela Meta
   (cloudflared/ngrok resolve). Requer conta Business/Creator.
@@ -192,5 +201,6 @@ Depois de mexer em `STYLE_CLIP`, use *Refazer cortes* para aplicar sem reprocess
 
 - Não faz dublagem, só legenda. A dublagem é o próximo módulo (TTS + alinhamento).
 - Um worker por vez: transcrição e render competem pela mesma GPU.
-- O reframe 9:16 é centralizado com fundo desfocado — não segue rosto. Para
-  conteúdo com dois interlocutores em quadro largo, vale revisar antes de postar.
+- O reframe 9:16 recorta focando no rosto (YuNet, com Haar de reserva; cai para o
+  centro quando não acha rosto). Em quadro largo com dois interlocutores, a janela
+  vai para o rosto maior — vale revisar antes de postar.
