@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS orders (
     kind          TEXT NOT NULL,        -- 'episode' | 'subscription'
     episode_id    INTEGER,              -- nulo para assinatura
     amount        REAL,                 -- valor cobrado em BRL (informativo)
-    status        TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|delivered|canceled
+    status        TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|delivered|canceled|failed
+    attempts      INTEGER NOT NULL DEFAULT 0,       -- tentativas de entrega
     created_at    TEXT NOT NULL,
     paid_at       TEXT
 );
@@ -176,6 +177,10 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE posts ADD COLUMN orientation TEXT NOT NULL DEFAULT 'vertical'"
             )
+
+        order_columns = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
+        if "attempts" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
 
 
 def request_action(episode_id: int, action: str) -> None:
@@ -448,8 +453,9 @@ def list_posts(episode_id: int) -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- orders (vendas)
 
-ORDER_STATES = ("pending", "paid", "delivered", "canceled")
-ORDER_COLUMNS = {"buyer_name", "kind", "episode_id", "amount", "status", "paid_at"}
+ORDER_STATES = ("pending", "paid", "delivered", "canceled", "failed")
+ORDER_COLUMNS = {"buyer_name", "kind", "episode_id", "amount", "status", "attempts", "paid_at"}
+MAX_DELIVERY_ATTEMPTS = 4
 
 
 def create_order(buyer_tg_id: str, kind: str, buyer_name: str | None = None,

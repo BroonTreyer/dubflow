@@ -72,6 +72,10 @@ def _handle_text(text: str, chat_id: int, name: str | None) -> str:
         item = archive.find(ep)
         if item is None or item.get("licenca") not in telegram.SELLABLE_LICENSES:
             return "Nao achei esse episodio no catalogo. Veja o /catalogo."
+        # Assinante (ou quem ja comprou este avulso) recebe na hora, sem pagar de novo.
+        if sales.has_access(str(chat_id), ep):
+            sales.grant_episode(str(chat_id), ep, name)
+            return "Voce tem acesso a este episodio. Estou enviando agora..."
         oid = sales.create_episode_order(str(chat_id), ep, name)
         return (f"Pedido #{oid} do episodio {ep} criado.\n\n"
                 f"{sales.pix_instructions(settings.price_episode)}")

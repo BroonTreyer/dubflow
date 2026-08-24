@@ -279,6 +279,14 @@ def main() -> int:
     check("/assinar cria pedido de assinatura",
           "Pedido" in r3 and any(o["kind"] == "subscription" and str(o["buyer_tg_id"]) == "901"
                                  for o in db.list_orders()), r3)
+    # Conserto: assinante (555002, com assinatura ativa da secao anterior) recebe na hora.
+    r4 = bot._handle_text("/comprar 1", 555002, "Ciclana")
+    check("assinante recebe sem pagar de novo",
+          "enviando" in r4.lower() or "acesso" in r4.lower(), r4)
+    do_assinante = [o for o in db.list_orders()
+                    if str(o["buyer_tg_id"]) == "555002" and o["kind"] == "episode"]
+    check("pedido do assinante ja entra pago (fila de entrega)",
+          bool(do_assinante) and do_assinante[0]["status"] == "paid", do_assinante)
 
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]

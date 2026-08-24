@@ -40,6 +40,17 @@ def create_subscription_order(buyer_tg_id: str, buyer_name: str | None = None) -
     return db.create_order(buyer_tg_id, "subscription", buyer_name, None, settings.price_subscription)
 
 
+def grant_episode(buyer_tg_id: str, episode_id: int, buyer_name: str | None = None) -> int:
+    """Entrega gratis para quem ja tem acesso (assinante, ou ja comprou o avulso).
+
+    Cria um pedido de valor 0 ja marcado como 'paid', para cair direto na fila de
+    entrega do worker — sem pedir Pix de novo.
+    """
+    oid = db.create_order(buyer_tg_id, "episode", buyer_name, episode_id, 0.0)
+    db.update_order(oid, status="paid")
+    return oid
+
+
 def confirm_payment(order_id: int) -> dict[str, Any] | None:
     """Marca o pedido como pago. Sendo assinatura, estende o acesso. Idempotente.
 

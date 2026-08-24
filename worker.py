@@ -151,9 +151,19 @@ def run_delivery_queue() -> bool:
     result = publishers.telegram.deliver_episode(meta, order["buyer_tg_id"])
     if result.ok:
         sales.mark_delivered(order["id"])
+        return True
+
+    # Falhou: conta a tentativa. Ate o teto, continua 'paid' e a proxima volta tenta
+    # de novo; passando do teto, vira 'failed' para nao travar a fila para sempre.
+    attempts = (order.get("attempts") or 0) + 1
+    if attempts >= db.MAX_DELIVERY_ATTEMPTS:
+        db.update_order(order["id"], status="failed", attempts=attempts)
+        log.error("pedido %s falhou %d vezes; marcado 'failed': %s",
+                  order["id"], attempts, result.error)
     else:
-        log.error("entrega do pedido %s falhou: %s (fica em 'paid' para retry)",
-                  order["id"], result.error)
+        db.update_order(order["id"], attempts=attempts)
+        log.warning("entrega do pedido %s falhou (tentativa %d): %s",
+                    order["id"], attempts, result.error)
     return True
 
 
