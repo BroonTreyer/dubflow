@@ -64,7 +64,7 @@ Nenhum deles precisa de rede, GPU ou chave de API.
 |---|---|
 | Download + extração de áudio | 0 |
 | Transcrição (large-v3 local) | 0 |
-| Tradução (~13k tokens in / 13k out, Opus 4.8) | ~US$ 0,40 |
+| Tradução (~13k tokens in / 13k out, Opus 5) | ~US$ 0,40 |
 | Seleção de cortes | ~US$ 0,10 |
 | Render dos cortes | 0 |
 
@@ -111,7 +111,7 @@ terceiro. O flag mantém o caminho legítimo como o padrão sem travar seu teste
 
 | Variável | Padrão | Para quê |
 |---|---|---|
-| `TRANSLATE_MODEL` | `claude-opus-4-8` | Modelo da tradução |
+| `TRANSLATE_MODEL` | `claude-opus-5` | Modelo da tradução |
 | `TRANSLATE_EFFORT` | `medium` | Profundidade de raciocínio |
 | `USE_BATCH_API` | `false` | Metade do preço, sem garantia de latência |
 | `CLIPS_PER_EPISODE` | `5` | Quantos cortes por episódio |

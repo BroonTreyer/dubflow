@@ -46,9 +46,9 @@ class Settings:
 
     # --- Claude ---
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    translate_model: str = os.getenv("TRANSLATE_MODEL", "claude-opus-4-8")
+    translate_model: str = os.getenv("TRANSLATE_MODEL", "claude-opus-5")
     translate_effort: str = os.getenv("TRANSLATE_EFFORT", "medium")
-    clip_model: str = os.getenv("CLIP_MODEL", "claude-opus-4-8")
+    clip_model: str = os.getenv("CLIP_MODEL", "claude-opus-5")
     use_batch_api: bool = _bool("USE_BATCH_API", False)
 
     # --- cortes ---
