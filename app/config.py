@@ -50,6 +50,16 @@ class Settings:
     clips_per_episode: int = _int("CLIPS_PER_EPISODE", 5)
     clip_min_seconds: int = _int("CLIP_MIN_SECONDS", 25)
     clip_max_seconds: int = _int("CLIP_MAX_SECONDS", 75)
+    # Enquadramento 9:16: face (recorta focando no rosto) | center | pad (legado).
+    clip_reframe: str = os.getenv("CLIP_REFRAME", "face")
+    # Legenda karaoke (palavra destacada no tempo da fala) nos cortes verticais.
+    clip_karaoke: bool = _bool("CLIP_KARAOKE", True)
+    # Renderiza tambem a versao horizontal 16:9 do corte (para o YouTube comum).
+    clip_render_wide: bool = _bool("CLIP_RENDER_WIDE", True)
+    # Gera thumbnail 16:9 de cada corte.
+    clip_thumbnail: bool = _bool("CLIP_THUMBNAIL", True)
+    # Normaliza o volume (loudnorm -14 LUFS) no render dos cortes.
+    audio_loudnorm: bool = _bool("AUDIO_LOUDNORM", True)
 
     # --- video ---
     burn_full_episode: bool = _bool("BURN_FULL_EPISODE", False)
@@ -63,6 +73,14 @@ class Settings:
     ig_access_token: str = os.getenv("IG_ACCESS_TOKEN", "")
     tiktok_access_token: str = os.getenv("TIKTOK_ACCESS_TOKEN", "")
     public_base_url: str = os.getenv("PUBLIC_BASE_URL", "")  # url publica dos MP4 (Instagram exige)
+
+    # --- youtube (OAuth2: refresh token de longa duracao, ver scripts/youtube_auth.py) ---
+    youtube_client_id: str = os.getenv("YOUTUBE_CLIENT_ID", "")
+    youtube_client_secret: str = os.getenv("YOUTUBE_CLIENT_SECRET", "")
+    youtube_refresh_token: str = os.getenv("YOUTUBE_REFRESH_TOKEN", "")
+    # Padrao 'private': o Short sobe oculto ate voce liberar. Aceita private/unlisted/public.
+    youtube_privacy: str = os.getenv("YOUTUBE_PRIVACY", "private")
+    youtube_category_id: str = os.getenv("YOUTUBE_CATEGORY_ID", "22")  # 22 = People & Blogs
 
     # --- telegram ---
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
