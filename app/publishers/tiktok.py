@@ -15,7 +15,7 @@ from pathlib import Path
 
 import requests
 
-from app.config import settings
+from app import credentials
 from app.publishers.base import PublishResult
 
 log = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ name = "tiktok"
 
 
 def configured() -> bool:
-    return bool(settings.tiktok_access_token)
+    return bool(credentials.get("TIKTOK_ACCESS_TOKEN"))
 
 
 def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
@@ -39,7 +39,7 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
 
     size = video_path.stat().st_size
     headers = {
-        "Authorization": f"Bearer {settings.tiktok_access_token}",
+        "Authorization": f"Bearer {credentials.get("TIKTOK_ACCESS_TOKEN")}",
         "Content-Type": "application/json; charset=UTF-8",
     }
 

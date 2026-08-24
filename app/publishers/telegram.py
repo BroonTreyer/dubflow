@@ -17,7 +17,7 @@ from typing import Any
 
 import requests
 
-from app.config import settings
+from app import credentials
 from app.pipeline import archive
 from app.publishers.base import PublishResult
 
@@ -32,11 +32,11 @@ name = "telegram"
 
 
 def configured() -> bool:
-    return bool(settings.telegram_bot_token and settings.telegram_channel_id)
+    return bool(credentials.get("TELEGRAM_BOT_TOKEN") and credentials.get("TELEGRAM_CHANNEL_ID"))
 
 
 def _url(method: str) -> str:
-    return f"{API}/bot{settings.telegram_bot_token}/{method}"
+    return f"{API}/bot{credentials.get("TELEGRAM_BOT_TOKEN")}/{method}"
 
 
 def send_clip(video_path: Path, caption: str, chat_id: str | None = None) -> PublishResult:
@@ -44,7 +44,7 @@ def send_clip(video_path: Path, caption: str, chat_id: str | None = None) -> Pub
     if not configured():
         return PublishResult(False, error="Telegram nao configurado")
 
-    target = chat_id or settings.telegram_channel_id
+    target = chat_id or credentials.get("TELEGRAM_CHANNEL_ID")
     try:
         with Path(video_path).open("rb") as fh:
             response = requests.post(

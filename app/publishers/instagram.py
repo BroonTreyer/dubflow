@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 
-from app.config import settings
+from app import credentials
 from app.publishers.base import PublishResult
 from app.security import media_signature
 
@@ -28,7 +28,7 @@ name = "instagram"
 
 
 def configured() -> bool:
-    return bool(settings.ig_user_id and settings.ig_access_token and settings.public_base_url)
+    return bool(credentials.get("IG_USER_ID") and credentials.get("IG_ACCESS_TOKEN") and credentials.get("PUBLIC_BASE_URL"))
 
 
 def public_url_for(video_path: Path) -> str:
@@ -39,7 +39,7 @@ def public_url_for(video_path: Path) -> str:
     nome do arquivo nao e enumeravel.
     """
     name = video_path.name
-    return f"{settings.public_base_url.rstrip('/')}/media/{media_signature(name)}/{name}"
+    return f"{credentials.get("PUBLIC_BASE_URL").rstrip('/')}/media/{media_signature(name)}/{name}"
 
 
 def publish(video_path: Path, caption: str, title: str | None = None) -> PublishResult:
@@ -48,13 +48,13 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
 
     try:
         container = requests.post(
-            f"{GRAPH}/{settings.ig_user_id}/media",
+            f"{GRAPH}/{credentials.get("IG_USER_ID")}/media",
             data={
                 "media_type": "REELS",
                 "video_url": public_url_for(video_path),
                 "caption": caption[:2200],
                 "share_to_feed": "true",
-                "access_token": settings.ig_access_token,
+                "access_token": credentials.get("IG_ACCESS_TOKEN"),
             },
             timeout=60,
         )
@@ -70,8 +70,8 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
             return PublishResult(False, error=f"processamento terminou como {status}")
 
         published = requests.post(
-            f"{GRAPH}/{settings.ig_user_id}/media_publish",
-            data={"creation_id": creation_id, "access_token": settings.ig_access_token},
+            f"{GRAPH}/{credentials.get("IG_USER_ID")}/media_publish",
+            data={"creation_id": creation_id, "access_token": credentials.get("IG_ACCESS_TOKEN")},
             timeout=60,
         ).json()
         if "id" not in published:
@@ -91,7 +91,7 @@ def _wait_ready(creation_id: str, timeout_seconds: int = 900, interval: int = 10
     while time.time() < deadline:
         response = requests.get(
             f"{GRAPH}/{creation_id}",
-            params={"fields": "status_code", "access_token": settings.ig_access_token},
+            params={"fields": "status_code", "access_token": credentials.get("IG_ACCESS_TOKEN")},
             timeout=30,
         ).json()
         status = response.get("status_code", "UNKNOWN")
@@ -133,7 +133,7 @@ def _permalink(media_id: str) -> str | None:
     try:
         response = requests.get(
             f"{GRAPH}/{media_id}",
-            params={"fields": "permalink", "access_token": settings.ig_access_token},
+            params={"fields": "permalink", "access_token": credentials.get("IG_ACCESS_TOKEN")},
             timeout=30,
         ).json()
         return response.get("permalink")

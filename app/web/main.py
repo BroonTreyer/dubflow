@@ -23,7 +23,7 @@ from fastapi.responses import (
 )
 from fastapi.templating import Jinja2Templates
 
-from app import db, security
+from app import credentials, db, security
 from app.config import settings
 from app.pipeline import archive
 from app.publishers import REGISTRY, status as publisher_status
@@ -110,6 +110,39 @@ def index(request: Request):
             "csrf": security.csrf_token(request),
         },
     )
+
+
+@app.get("/connections", response_class=HTMLResponse, dependencies=panel)
+def connections(request: Request, salvo: int = 0):
+    # Valores nao-sensiveis podem ser mostrados preenchidos; segredos, nunca.
+    values = {
+        key: credentials.get(key)
+        for key in credentials.ALL_KEYS
+        if key not in credentials.SECRET_KEYS
+    }
+    return templates.TemplateResponse(
+        request,
+        "connections.html",
+        {
+            "managed": credentials.MANAGED,
+            "secret_keys": credentials.SECRET_KEYS,
+            "status": credentials.status(),
+            "ready": publisher_status(),
+            "values": values,
+            "csrf": security.csrf_token(request),
+            "salvo": bool(salvo),
+        },
+    )
+
+
+@app.post("/connections", dependencies=panel)
+async def save_connections(request: Request, csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    form = await request.form()
+    # So chaves da allowlist do cofre; valores vazios sao ignorados no save().
+    updates = {key: str(form.get(key) or "") for key in credentials.ALL_KEYS}
+    credentials.save(updates)
+    return RedirectResponse("/connections?salvo=1", status_code=303)
 
 
 @app.post("/episodes", dependencies=panel)

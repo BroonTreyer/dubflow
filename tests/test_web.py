@@ -188,6 +188,30 @@ def main() -> int:
         db.update_post(p["id"], status="failed")
     check("fila volta a ter so o telegram", len(db.pending_posts()) == 1, len(db.pending_posts()))
 
+    print("conexoes (tela de credenciais)")
+    from app import credentials
+    from app.publishers import tiktok
+    check("conexoes exige sessao",
+          anon.get("/connections", follow_redirects=False).status_code in (303, 401))
+    check("GET conexoes autenticado", client.get("/connections").status_code == 200)
+    r = client.post("/connections", data={"TIKTOK_ACCESS_TOKEN": "x", "csrf": "invalido"},
+                    follow_redirects=False)
+    check("conexoes POST sem csrf recusado", r.status_code == 403, r.status_code)
+    r = client.post("/connections",
+                    data={"TIKTOK_ACCESS_TOKEN": "tok-secreto-123", "IG_USER_ID": "999",
+                          "csrf": token}, follow_redirects=False)
+    check("conexoes salva", r.status_code == 303, r.status_code)
+    check("token salvo no cofre", credentials.get("TIKTOK_ACCESS_TOKEN") == "tok-secreto-123")
+    check("valor nao-secreto salvo", credentials.get("IG_USER_ID") == "999")
+    check("publisher reflete ao vivo (sem reiniciar)", tiktok.configured() is True)
+    body = client.get("/connections").text
+    check("segredo nao aparece no html", "tok-secreto-123" not in body, "vazou o token!")
+    check("nao-secreto aparece no html", "999" in body)
+    # Campo em branco nao pode apagar o que ja estava salvo.
+    client.post("/connections", data={"TIKTOK_ACCESS_TOKEN": "", "csrf": token},
+                follow_redirects=False)
+    check("vazio nao apaga o token", credentials.get("TIKTOK_ACCESS_TOKEN") == "tok-secreto-123")
+
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]
     db.update_post(pid, status="publishing")

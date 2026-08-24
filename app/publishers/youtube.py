@@ -23,6 +23,7 @@ from pathlib import Path
 
 import requests
 
+from app import credentials
 from app.config import settings
 from app.publishers.base import PublishResult
 
@@ -41,9 +42,9 @@ name = "youtube"
 
 def configured() -> bool:
     return bool(
-        settings.youtube_client_id
-        and settings.youtube_client_secret
-        and settings.youtube_refresh_token
+        credentials.get("YOUTUBE_CLIENT_ID")
+        and credentials.get("YOUTUBE_CLIENT_SECRET")
+        and credentials.get("YOUTUBE_REFRESH_TOKEN")
     )
 
 
@@ -79,7 +80,7 @@ def publish(video_path: Path, caption: str, title: str | None = None) -> Publish
             "categoryId": settings.youtube_category_id,
         },
         "status": {
-            "privacyStatus": settings.youtube_privacy,
+            "privacyStatus": credentials.get("YOUTUBE_PRIVACY") or settings.youtube_privacy,
             # Sem esta declaracao a API recusa o upload: e obrigatoria desde as
             # regras de conteudo infantil (COPPA). Estes cortes nao sao para criancas.
             "selfDeclaredMadeForKids": False,
@@ -138,9 +139,9 @@ def _access_token() -> str | None:
         response = requests.post(
             TOKEN_URL,
             data={
-                "client_id": settings.youtube_client_id,
-                "client_secret": settings.youtube_client_secret,
-                "refresh_token": settings.youtube_refresh_token,
+                "client_id": credentials.get("YOUTUBE_CLIENT_ID"),
+                "client_secret": credentials.get("YOUTUBE_CLIENT_SECRET"),
+                "refresh_token": credentials.get("YOUTUBE_REFRESH_TOKEN"),
                 "grant_type": "refresh_token",
             },
             timeout=30,
