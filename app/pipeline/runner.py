@@ -14,7 +14,8 @@ from typing import Any
 
 from app import db
 from app.config import settings
-from app.pipeline import archive, clips, ingest, subtitles, transcribe, translate
+from app.pipeline import (archive, clips, ingest, subtitles, thumbnail, transcribe,
+                          translate)
 
 log = logging.getLogger(__name__)
 
@@ -62,12 +63,12 @@ def _render_variants(
             log.warning("[ep %s] corte %d: versao horizontal falhou: %s", episode_id, idx, exc)
 
     if settings.clip_thumbnail:
-        thumb = clips.make_thumbnail(video_path, clip, clip_dir / f"{nome}.jpg")
+        thumb = thumbnail.make(video_path, clip, clip_dir / f"{nome}.jpg")
         if thumb is not None:
             fields["thumb_path"] = str(thumb)
         # A capa vertical e a que aparece no Reels/TikTok/Short; a 16:9 serve para
         # o YouTube horizontal. Sao enquadramentos diferentes do mesmo frame.
-        thumb_v = clips.make_thumbnail(
+        thumb_v = thumbnail.make(
             video_path, clip, clip_dir / f"{nome}_vertical.jpg", vertical=True
         )
         if thumb_v is not None:
@@ -86,6 +87,10 @@ def process_episode(episode_id: int) -> dict[str, Any]:
 
     try:
         # ---------------------------------------------------------- 1. ingest
+        # Marca quando o trabalho comecou de fato: created_at e de quando voce
+        # colou o link, e um episodio que esperou horas na fila daria um tempo
+        # estimado absurdo se contasse dali.
+        db.update_episode(episode_id, started_at=db.now())
         _set(episode_id, "downloading", 0.02)
         info = ingest.probe(episode["source_url"])
         db.update_episode(
@@ -249,6 +254,7 @@ def burn_episode(episode_id: int) -> Path:
     paths = dict(episode.get("paths") or {})
     work_dir = settings.episode_dir(episode_id)
 
+    db.update_episode(episode_id, started_at=db.now())
     _set(episode_id, "burning", 0.1)
     ass_path = subtitles.write_ass(translated, work_dir / "legenda_ptbr.ass")
     saida = subtitles.burn(
@@ -278,6 +284,7 @@ def rerender_clips(episode_id: int) -> int:
     if not existentes:
         raise RuntimeError("este episodio nao tem cortes para refazer")
 
+    db.update_episode(episode_id, started_at=db.now())
     work_dir = settings.episode_dir(episode_id)
     clip_dir = work_dir / "clips"
     clip_dir.mkdir(exist_ok=True)

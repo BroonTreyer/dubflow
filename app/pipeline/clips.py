@@ -90,6 +90,12 @@ Chamativo mas honesto — nada de clickbait que o trecho nao entrega. Sem hashta
 - `yt_description`: descricao para o YouTube, em pt-BR. Duas ou tres frases: o que o \
 trecho mostra e por que vale assistir, seguidas de 3 a 6 hashtags relevantes em uma \
 linha. Escreva para busca — use os termos que o publico procuraria.
+- `thumb_text`: o texto que vai ESTAMPADO na capa, em pt-BR. Regra dura: no maximo \
+5 palavras, idealmente 3. Nao e o titulo resumido — e o gancho que faz parar o \
+scroll, lido em meio segundo a 3 cm de altura. Use a tensao do trecho: \
+"ELE NEGOU TUDO", "PERDEU R$ 2 MILHOES", "A PERGUNTA PROIBIDA". Sem ponto final, \
+sem aspas, sem hashtag, sem emoji. Marque com asteriscos a palavra (ou duas) que \
+deve sair colorida na capa: "ELE *MENTIU* NA CARA".
 - `score`: 0 a 10, o quanto voce aposta que ESTE corte performa. Use a escala \
 inteira e seja duro: 9-10 e o corte que voce publicaria hoje, 7-8 e bom, 5-6 e \
 mediano, abaixo de 5 nao deveria ter sido escolhido. Varios cortes com nota \
@@ -142,10 +148,11 @@ CLIP_SCHEMA = {
                     "caption": {"type": "string"},
                     "yt_title": {"type": "string"},
                     "yt_description": {"type": "string"},
+                    "thumb_text": {"type": "string"},
                     "score": {"type": "number"},
                 },
                 "required": ["start", "end", "title", "hook", "caption",
-                             "yt_title", "yt_description", "score"],
+                             "yt_title", "yt_description", "thumb_text", "score"],
                 "additionalProperties": False,
             },
         }
@@ -369,6 +376,7 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
                 "caption": (clip.get("caption") or "").strip()[:2000],
                 "yt_title": (clip.get("yt_title") or "").strip()[:100],
                 "yt_description": (clip.get("yt_description") or "").strip()[:4800],
+                "thumb_text": (clip.get("thumb_text") or "").strip()[:80],
                 "score": float(clip.get("score") or 0),
             }
         )

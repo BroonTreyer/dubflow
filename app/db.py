@@ -34,7 +34,7 @@ LICENSE_STATES = ("unknown", "licensed", "owned", "public_domain")
 EPISODE_COLUMNS = {
     "source_url", "video_id", "title", "channel", "duration", "lang_src", "lang_dst",
     "license_status", "status", "progress", "error", "paths", "meta", "updated_at",
-    "pending_action",
+    "pending_action", "started_at",
 }
 
 # Acoes pedidas pelo painel sobre um episodio ja concluido, executadas pelo
@@ -43,7 +43,7 @@ EPISODE_COLUMNS = {
 ACTIONS = ("burn", "rerender_clips")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
                 "yt_description", "score", "path", "path_wide", "thumb_path",
-                "thumb_vertical_path", "status"}
+                "thumb_vertical_path", "thumb_text", "status"}
 POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
                 "scheduled_at", "posted_at", "attempts",
                 "views", "likes", "comments", "stats_at"}
@@ -71,7 +71,11 @@ CREATE TABLE IF NOT EXISTS episodes (
     paths           TEXT NOT NULL DEFAULT '{}',
     meta            TEXT NOT NULL DEFAULT '{}',
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    -- Quando o worker PEGOU o episodio (created_at e quando voce colou o link).
+    -- E a base do tempo estimado: sem isso, um video que esperou 3h na fila
+    -- pareceria estar processando ha 3h.
+    started_at      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clips (
@@ -90,6 +94,7 @@ CREATE TABLE IF NOT EXISTS clips (
     path_wide      TEXT,
     thumb_path     TEXT,
     thumb_vertical_path TEXT,
+    thumb_text     TEXT,
     status         TEXT NOT NULL DEFAULT 'pending',
     created_at     TEXT NOT NULL
 );
@@ -143,6 +148,40 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Estados em que nao ha mais nada a esperar.
+TERMINAL = ("done", "failed", "canceled")
+
+
+def eta_seconds(episode: dict[str, Any]) -> int | None:
+    """Quanto falta, em segundos, pelo ritmo observado ate agora.
+
+    Regra de tres simples sobre o progresso: se 30% levou 3 min, os 70% que
+    faltam levam ~7 min. E uma estimativa grosseira — as etapas nao custam o
+    mesmo (o render dos cortes pesa mais que o download) — entao a UI mostra
+    como aproximacao, nunca como promessa.
+
+    None quando nao da para estimar: episodio terminal, ainda na fila, ou
+    progresso baixo demais para o ritmo significar alguma coisa.
+    """
+    if episode.get("status") in TERMINAL:
+        return None
+    progresso = float(episode.get("progress") or 0)
+    if progresso < 0.05 or progresso >= 1:
+        return None
+
+    inicio = episode.get("started_at")
+    if not inicio:
+        return None
+    try:
+        decorrido = (datetime.now(timezone.utc) - datetime.fromisoformat(inicio)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    if decorrido <= 0:
+        return None
+
+    return int(decorrido / progresso * (1 - progresso))
+
+
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(settings.db_path, timeout=30)
@@ -172,6 +211,8 @@ def init_db() -> None:
         ep_columns = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
         if "pending_action" not in ep_columns:
             conn.execute("ALTER TABLE episodes ADD COLUMN pending_action TEXT")
+        if "started_at" not in ep_columns:
+            conn.execute("ALTER TABLE episodes ADD COLUMN started_at TEXT")
 
         # Migracoes das colunas de corte horizontal, thumbnail e orientacao do post.
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
@@ -181,6 +222,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_path TEXT")
         if "thumb_vertical_path" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_vertical_path TEXT")
+        if "thumb_text" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_text TEXT")
         if "yt_title" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN yt_title TEXT")
         if "yt_description" not in clip_columns:

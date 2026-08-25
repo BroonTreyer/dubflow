@@ -1,0 +1,433 @@
+"""Capa do corte: escolhe o melhor frame e estampa o gancho por cima.
+
+Um frame cru do meio do trecho e a capa mais fraca possivel — e a capa e a unica
+coisa que a pessoa ve antes de decidir clicar. Aqui o frame e escolhido (nitido,
+com rosto grande e bem exposto, e nao no meio de um piscar) e recebe o tratamento
+que canal grande usa: texto curto em caixa alta, fonte pesada, contorno grosso,
+uma palavra em cor de destaque e escurecimento por tras do texto para o contraste
+nunca depender da imagem.
+
+Duas saidas: 1280x720 para o YouTube e 1080x1920 para Reels/TikTok/Shorts.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+# Fontes pesadas do Windows, em ordem de preferencia. Impact e a fonte classica de
+# thumbnail; Arial Black e a mesma familia ja usada na legenda dos cortes.
+FONT_CANDIDATES = (
+    r"C:\Windows\Fonts\impact.ttf",
+    r"C:\Windows\Fonts\ariblk.ttf",
+    r"C:\Windows\Fonts\seguibl.ttf",
+    r"C:\Windows\Fonts\arialbd.ttf",
+)
+
+# Paleta de destaque. Nenhuma cor e fixa: a escolhida e a que tiver mais contraste
+# com o fundo REAL daquela capa. Amarelo some em parede clara, ciano some em ceu.
+HIGHLIGHT_PALETTE = (
+    (255, 216, 0),    # amarelo
+    (255, 122, 0),    # laranja
+    (0, 229, 255),    # ciano
+    (124, 252, 0),    # verde-limao
+    (255, 60, 90),    # vermelho-rosa
+)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+
+CANDIDATE_FRAMES = 9          # quantos frames disputam a capa
+MIN_CONTRAST = 4.5            # razao WCAG minima entre texto e fundo
+
+
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """Luminancia relativa (WCAG): quanto de luz a cor emite aos olhos.
+
+    Nao e a media dos canais — verde pesa muito mais que azul, e por isso que
+    amarelo (alto verde) parece claro e azul puro parece escuro.
+    """
+    canais = []
+    for valor in rgb:
+        c = valor / 255.0
+        canais.append(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4)
+    r, g, b = canais
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(c1: tuple[int, int, int], c2: tuple[int, int, int]) -> float:
+    """Razao de contraste WCAG entre duas cores (1 = iguais, 21 = preto/branco)."""
+    l1, l2 = relative_luminance(c1), relative_luminance(c2)
+    claro, escuro = max(l1, l2), min(l1, l2)
+    return (claro + 0.05) / (escuro + 0.05)
+
+
+def color_distance(c1: tuple[int, int, int], c2: tuple[int, int, int]) -> float:
+    """Distancia entre duas cores, ponderada como o olho enxerga.
+
+    Complementa o contraste WCAG, que so mede luminancia: amarelo e branco tem
+    luminancia parecida e ainda assim ninguem confunde os dois.
+    """
+    r = (c1[0] + c2[0]) / 2  # a percepcao de diferenca no vermelho muda com o nivel
+    dr, dg, db = c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]
+    return ((2 + r / 256) * dr * dr + 4 * dg * dg + (2 + (255 - r) / 256) * db * db) ** 0.5
+
+
+def pick_colors(fundo: tuple[int, int, int]) -> tuple[tuple, tuple, tuple]:
+    """Escolhe (texto, destaque, contorno) que sobrevivem NESTE fundo.
+
+    O contorno e sempre o oposto do texto: e ele que segura a legibilidade quando
+    o texto atravessa uma area de fundo irregular — metade sobre a parede escura,
+    metade sobre a camisa clara.
+    """
+    texto = WHITE if contrast_ratio(WHITE, fundo) >= contrast_ratio(BLACK, fundo) else BLACK
+    contorno = BLACK if texto == WHITE else WHITE
+
+    # A paleta esta em ordem de preferencia: fica no amarelo (a cor que o olho
+    # associa a thumbnail) e so troca quando ele nao sobrevive neste fundo. Pontuar
+    # por contraste puro elegeria sempre a mesma cor e deixaria toda capa igual.
+    for cor in HIGHLIGHT_PALETTE:
+        # Duas exigencias diferentes, e cada uma pede sua medida:
+        # - contra o FUNDO, contraste WCAG (luminancia) — e o que decide legibilidade;
+        # - contra o TEXTO, distancia de cor — amarelo e branco tem luminancia
+        #   parecida (WCAG diria 1.07) e mesmo assim se distinguem de longe, porque
+        #   o que separa os dois e o matiz.
+        if contrast_ratio(cor, fundo) >= MIN_CONTRAST and color_distance(cor, texto) >= 120:
+            return texto, cor, contorno
+
+    # Nenhuma passou: pega a de maior contraste com o fundo, e se nem essa serve,
+    # desiste do realce em vez de estampar uma palavra ilegivel.
+    melhor = max(HIGHLIGHT_PALETTE, key=lambda c: contrast_ratio(c, fundo))
+    if contrast_ratio(melhor, fundo) < 2.0:
+        return texto, texto, contorno
+    return texto, melhor, contorno
+
+
+def _font_path() -> str | None:
+    for candidate in FONT_CANDIDATES:
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def parse_highlight(texto: str) -> list[tuple[str, bool]]:
+    """Quebra "ELE *MENTIU* NA CARA" em palavras, marcando as destacadas.
+
+    O modelo marca com asteriscos a parte que deve sair colorida. Sem marcacao,
+    destaca a palavra mais longa — sempre ter uma cor quebra a parede de branco.
+    """
+    palavras: list[tuple[str, bool]] = []
+    for pedaco in texto.split():
+        destaque = "*" in pedaco
+        limpo = pedaco.replace("*", "").strip()
+        if limpo:
+            palavras.append((limpo, destaque))
+
+    if palavras and not any(d for _, d in palavras):
+        maior = max(range(len(palavras)), key=lambda i: len(palavras[i][0]))
+        palavras[maior] = (palavras[maior][0], True)
+    return palavras
+
+
+def _score_frame(img: Any) -> float:
+    """Nota de um candidato a capa: nitidez, rosto grande e exposicao decente.
+
+    Nao detecta olho fechado (5 landmarks nao dizem isso), mas frame borrado —
+    que e onde o piscar e o movimento brusco costumam cair — perde no foco.
+    """
+    import cv2
+    from app.pipeline import clips
+
+    cinza = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = cinza.shape[:2]
+
+    # Variancia do laplaciano: o indicador classico de foco.
+    nitidez = float(cv2.Laplacian(cinza, cv2.CV_64F).var())
+    nota = min(nitidez / 400.0, 2.5)
+
+    # Exposicao: penaliza frame estourado ou quase preto (corte de cena, flash).
+    brilho = float(cinza.mean())
+    if brilho < 40 or brilho > 215:
+        nota -= 1.5
+
+    # Rosto grande e um enorme diferencial numa capa.
+    boxes = clips._face_boxes(img)
+    if boxes:
+        maior = max(b[2] * b[3] for b in boxes)
+        nota += min((maior / (w * h)) * 12.0, 2.0)
+    return nota
+
+
+def pick_frame(video_path: Path, start: float, duration: float,
+               out_dir: Path) -> tuple[Path | None, float]:
+    """Extrai candidatos ao longo do trecho e devolve o melhor frame."""
+    try:
+        import cv2
+    except ImportError:
+        return None, start + duration / 2
+
+    # Evita as pontas: o comeco costuma pegar o corte de cena anterior.
+    ini, fim = start + duration * 0.12, start + duration * 0.88
+    passo = (fim - ini) / max(1, CANDIDATE_FRAMES - 1)
+
+    melhor: tuple[float, Path, float] | None = None
+    for i in range(CANDIDATE_FRAMES):
+        t = ini + i * passo
+        destino = out_dir / f"cand_{i:02d}.jpg"
+        cmd = ["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.2f}", "-i", str(video_path),
+               "-frames:v", "1", "-q:v", "2", str(destino)]
+        try:
+            if subprocess.run(cmd, capture_output=True).returncode != 0:
+                continue
+        except OSError:
+            return None, start + duration / 2
+        img = cv2.imread(str(destino))
+        if img is None:
+            continue
+        nota = _score_frame(img)
+        if melhor is None or nota > melhor[0]:
+            melhor = (nota, destino, t)
+
+    if melhor is None:
+        return None, start + duration / 2
+    return melhor[1], melhor[2]
+
+
+def _fit_lines(draw: Any, palavras: list[tuple[str, bool]], largura_util: int,
+               tamanho_inicial: int, font_file: str, max_linhas: int = 2):
+    """Maior corpo de fonte que faz o texto caber em ate `max_linhas` linhas."""
+    from PIL import ImageFont
+
+    tamanho = tamanho_inicial
+    while tamanho > 24:
+        fonte = ImageFont.truetype(font_file, tamanho)
+        espaco = draw.textlength(" ", font=fonte)
+        linhas: list[list[tuple[str, bool]]] = [[]]
+        largura_atual = 0.0
+        estourou = False
+        for palavra, destaque in palavras:
+            largura = draw.textlength(palavra, font=fonte)
+            if largura > largura_util:  # palavra sozinha ja nao cabe
+                estourou = True
+                break
+            extra = largura if not linhas[-1] else espaco + largura
+            if largura_atual + extra <= largura_util:
+                linhas[-1].append((palavra, destaque))
+                largura_atual += extra
+            else:
+                linhas.append([(palavra, destaque)])
+                largura_atual = largura
+        if not estourou and len(linhas) <= max_linhas:
+            return fonte, linhas
+        tamanho -= 6
+
+    fonte = ImageFont.truetype(font_file, 24)
+    return fonte, [palavras]
+
+
+def compose(frame_path: Path, texto: str, output_path: Path,
+            size: tuple[int, int] = (1280, 720)) -> Path | None:
+    """Monta a capa: frame tratado + faixa escura + gancho estampado."""
+    font_file = _font_path()
+    if font_file is None:
+        log.warning("nenhuma fonte pesada encontrada; capa fica sem texto")
+        return None
+
+    try:
+        from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+    except ImportError:
+        log.warning("Pillow indisponivel; capa fica sem texto")
+        return None
+
+    largura, altura = size
+    vertical = altura > largura
+
+    img = Image.open(frame_path).convert("RGB")
+
+    # Preenche o quadro sem distorcer: escala pelo lado que falta e recorta o centro.
+    escala = max(largura / img.width, altura / img.height)
+    img = img.resize((max(1, round(img.width * escala)), max(1, round(img.height * escala))),
+                     Image.LANCZOS)
+    esquerda = (img.width - largura) // 2
+    topo = (img.height - altura) // 2
+    img = img.crop((esquerda, topo, esquerda + largura, topo + altura))
+
+    # Tratamento de capa: mais contraste e cor, que e o que separa da timeline.
+    img = ImageEnhance.Contrast(img).enhance(1.18)
+    img = ImageEnhance.Color(img).enhance(1.25)
+    img = ImageEnhance.Sharpness(img).enhance(1.4)
+
+    palavras = parse_highlight(texto)
+    if not palavras:
+        img.save(output_path, quality=92)
+        return output_path
+
+    margem = int(largura * 0.06)
+    largura_util = largura - 2 * margem
+    draw = ImageDraw.Draw(img)
+    corpo = int(altura * (0.085 if vertical else 0.17))
+    fonte, linhas = _fit_lines(draw, palavras, largura_util, corpo, font_file,
+                               max_linhas=3 if vertical else 2)
+
+    alturas = [draw.textbbox((0, 0), "Ay", font=fonte)[3] for _ in linhas]
+    entrelinha = int(fonte.size * 0.14)
+    bloco = sum(alturas) + entrelinha * (len(linhas) - 1)
+
+    y = _pick_band(img, bloco, vertical)
+
+    # Escurece a faixa do texto o quanto ESTE fundo exigir: uma cena clara precisa
+    # de mais veu que uma cena ja escura, e aplicar o mesmo veu nos dois casos
+    # apaga a imagem a toa num caso e nao resolve no outro.
+    folga = int(bloco * 0.55)
+    topo_faixa, base_faixa = max(0, y - folga), min(altura, y + bloco + folga)
+    fundo = _region_color(img, topo_faixa, base_faixa)
+
+    veu = _veil_strength(fundo)
+    if veu > 0:
+        mascara = Image.new("L", (largura, altura), 0)
+        ImageDraw.Draw(mascara).rectangle([0, topo_faixa, largura, base_faixa], fill=veu)
+        mascara = mascara.filter(ImageFilter.GaussianBlur(radius=int(bloco * 0.35) or 1))
+        img = Image.composite(Image.new("RGB", img.size, BLACK), img, mascara)
+        draw = ImageDraw.Draw(img)
+        fundo = _region_color(img, topo_faixa, base_faixa)  # remede depois do veu
+
+    cor_texto, cor_destaque, cor_contorno = pick_colors(fundo)
+
+    contorno = max(4, int(fonte.size * 0.13))
+    for linha, alt in zip(linhas, alturas):
+        largura_linha = sum(draw.textlength(p, font=fonte) for p, _ in linha)
+        largura_linha += draw.textlength(" ", font=fonte) * (len(linha) - 1)
+        x = (largura - largura_linha) / 2
+        for palavra, destaque in linha:
+            draw.text((x, y), palavra, font=fonte,
+                      fill=cor_destaque if destaque else cor_texto,
+                      stroke_width=contorno, stroke_fill=cor_contorno)
+            x += draw.textlength(palavra + " ", font=fonte)
+        y += alt + entrelinha
+
+    img.save(output_path, quality=92)
+    return output_path
+
+
+def _region_color(img: Any, topo: int, base: int) -> tuple[int, int, int]:
+    """Cor media da faixa horizontal — o "fundo" que o texto vai enfrentar."""
+    recorte = img.crop((0, max(0, topo), img.width, max(topo + 1, base)))
+    pequeno = recorte.resize((1, 1))
+    r, g, b = pequeno.getpixel((0, 0))[:3]
+    return (r, g, b)
+
+
+def _region_variance(img: Any, topo: int, base: int) -> float:
+    """Quao irregular e a faixa. Fundo agitado engole texto mesmo com contraste."""
+    from PIL import ImageStat
+
+    recorte = img.crop((0, max(0, topo), img.width, max(topo + 1, base))).convert("L")
+    return float(ImageStat.Stat(recorte.resize((32, 8))).stddev[0])
+
+
+def _pick_band(img: Any, bloco: int, vertical: bool) -> int:
+    """Escolhe a faixa onde o texto fica melhor: a mais uniforme e sem rosto.
+
+    Sem isso o texto cai sempre no mesmo lugar e, quando calha de ser em cima do
+    rosto ou de uma area cheia de detalhe, a capa fica ilegivel.
+    """
+    altura = img.height
+    folga = int(bloco * 0.55)
+    candidatos = [int(altura * 0.07), altura - bloco - int(altura * 0.08)]
+    if vertical:  # no 9:16 sobra espaco no meio-baixo, entre o rosto e a borda
+        candidatos.append(int(altura * 0.62))
+
+    rostos = _face_bands(img)
+
+    melhor, melhor_nota = candidatos[0], None
+    for y in candidatos:
+        topo, base = max(0, y - folga), min(altura, y + bloco + folga)
+        nota = -_region_variance(img, topo, base)
+        # Cobrir rosto e o pior resultado possivel numa capa.
+        if any(not (base < ry0 or topo > ry1) for ry0, ry1 in rostos):
+            nota -= 100
+        if melhor_nota is None or nota > melhor_nota:
+            melhor, melhor_nota = y, nota
+    return melhor
+
+
+def _face_bands(img: Any) -> list[tuple[int, int]]:
+    """Faixas verticais ocupadas por rosto, para o texto nao passar por cima."""
+    try:
+        import cv2
+        import numpy as np
+        from app.pipeline import clips
+    except ImportError:
+        return []
+    try:
+        matriz = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        return [(int(y), int(y + h)) for (_x, y, _w, h) in clips._face_boxes(matriz)]
+    except Exception:  # noqa: BLE001 — sem deteccao a capa ainda sai
+        return []
+
+
+def _veil_strength(fundo: tuple[int, int, int]) -> int:
+    """Quanto escurecer a faixa (0-255) para o texto ter contraste garantido.
+
+    Cena clara precisa de veu forte; cena ja escura quase nao precisa — e poupar
+    o veu preserva a imagem, que e o que atrai o olho na miniatura.
+    """
+    luz = relative_luminance(fundo)
+    if luz < 0.06:
+        return 0        # ja e quase preto: veu so apagaria a imagem
+    if luz < 0.18:
+        return 90
+    if luz < 0.40:
+        return 140
+    return 185          # cena clara/estourada: sem veu forte nao ha texto legivel
+
+
+def make(video_path: Path, clip: dict[str, Any], output_path: Path,
+         vertical: bool = False) -> Path | None:
+    """Capa completa de um corte. Nunca derruba o pipeline: falha vira None."""
+    from app.pipeline import clips
+
+    start, end = float(clip["start"]), float(clip["end"])
+    duration = end - start
+    texto = (clip.get("thumb_text") or "").strip()
+
+    with tempfile.TemporaryDirectory(prefix="dubflow_thumb_") as td:
+        tmp = Path(td)
+        frame, instante = pick_frame(video_path, start, duration, tmp)
+
+        if frame is None:  # sem opencv/ffmpeg: cai no frame do meio, sem escolha
+            frame = tmp / "meio.jpg"
+            cmd = ["ffmpeg", "-y", "-v", "error", "-ss", f"{instante:.2f}",
+                   "-i", str(video_path), "-frames:v", "1", "-q:v", "2", str(frame)]
+            try:
+                if subprocess.run(cmd, capture_output=True).returncode != 0:
+                    return None
+            except OSError:
+                return None
+
+        if vertical:
+            # A capa vertical usa o mesmo enquadramento do corte: recorta a janela
+            # 9:16 vigente naquele instante em vez do centro do quadro.
+            mode, track = clips._resolve_reframe(video_path, start, duration)
+            focus = clips._focus_at(track, instante - start)
+            enquadrado = tmp / "vert.jpg"
+            cmd = ["ffmpeg", "-y", "-v", "error", "-i", str(frame),
+                   "-filter_complex", clips._vertical_chain(mode, focus),
+                   "-map", "[framed]", "-q:v", "2", str(enquadrado)]
+            try:
+                if subprocess.run(cmd, capture_output=True).returncode == 0:
+                    frame = enquadrado
+            except OSError:
+                pass
+
+        size = (1080, 1920) if vertical else (1280, 720)
+        try:
+            return compose(frame, texto, output_path, size)
+        except Exception as exc:  # noqa: BLE001 — capa e um extra, nunca reprova o corte
+            log.warning("composicao da capa falhou (%s)", exc)
+            return None

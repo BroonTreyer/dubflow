@@ -534,6 +534,100 @@ def test_same_language_passthrough(tmp: pathlib.Path) -> None:
     check("idioma diferente nao pega o atalho", not translate.same_language("tr", "pt-BR"))
 
 
+def test_thumb_colors() -> None:
+    """A capa tem que se adaptar ao fundo: cor fixa some assim que a cena muda."""
+    print("capa / cores adaptativas")
+    from app.pipeline import thumbnail as th
+
+    ESCURO, CLARO = (18, 18, 20), (245, 245, 245)
+    AMARELO = (255, 216, 0)
+
+    # Contraste WCAG: o basico que decide legibilidade.
+    check("preto/branco e o contraste maximo",
+          abs(th.contrast_ratio((0, 0, 0), (255, 255, 255)) - 21) < 0.1)
+    check("cor igual nao contrasta", abs(th.contrast_ratio(ESCURO, ESCURO) - 1) < 0.01)
+    check("amarelo e mais luminoso que azul",
+          th.relative_luminance(AMARELO) > th.relative_luminance((0, 0, 255)))
+
+    # Texto sempre no maior contraste possivel contra o fundo.
+    txt_escuro, _, borda_escuro = th.pick_colors(ESCURO)
+    txt_claro, _, borda_claro = th.pick_colors(CLARO)
+    check("fundo escuro -> texto branco", txt_escuro == (255, 255, 255), txt_escuro)
+    check("fundo claro -> texto preto", txt_claro == (0, 0, 0), txt_claro)
+    check("contorno e sempre o oposto do texto",
+          borda_escuro == (0, 0, 0) and borda_claro == (255, 255, 255))
+
+    # A garantia que importa: nunca fonte escura em fundo escuro.
+    for fundo in [ESCURO, CLARO, (92, 80, 70), (150, 150, 150), (20, 60, 140), (250, 235, 60)]:
+        t, d, _ = th.pick_colors(fundo)
+        check(f"texto legivel em {fundo}", th.contrast_ratio(t, fundo) >= th.MIN_CONTRAST,
+              round(th.contrast_ratio(t, fundo), 1))
+        check(f"destaque nao some em {fundo}", th.contrast_ratio(d, fundo) >= 2.0,
+              round(th.contrast_ratio(d, fundo), 1))
+
+    # Amarelo e o padrao estetico, mas cede quando o fundo e amarelado.
+    _, dest_escuro, _ = th.pick_colors(ESCURO)
+    _, dest_amarelo, _ = th.pick_colors((250, 235, 60))
+    check("amarelo e o padrao no escuro", dest_escuro == AMARELO, dest_escuro)
+    check("fundo amarelo troca a cor do destaque", dest_amarelo != AMARELO, dest_amarelo)
+
+    # Distancia de cor pega o que o contraste WCAG nao ve.
+    check("amarelo e branco se distinguem",
+          th.color_distance(AMARELO, (255, 255, 255)) >= 120,
+          th.color_distance(AMARELO, (255, 255, 255)))
+    check("WCAG sozinho nao separaria os dois",
+          th.contrast_ratio(AMARELO, (255, 255, 255)) < 1.4)
+
+    # Veu: cena clara precisa de escurecimento, cena ja preta nao.
+    check("cena clara ganha veu forte", th._veil_strength(CLARO) > 150, th._veil_strength(CLARO))
+    check("cena preta nao leva veu", th._veil_strength((5, 5, 6)) == 0)
+    check("veu cresce com a luz",
+          th._veil_strength((60, 60, 60)) < th._veil_strength((200, 200, 200)))
+
+    # Texto do gancho: marcacao por asterisco e destaque garantido.
+    palavras = th.parse_highlight("ELE *MENTIU* NA CARA")
+    check("separa as palavras", [p for p, _ in palavras] == ["ELE", "MENTIU", "NA", "CARA"], palavras)
+    check("destaca so a marcada", [d for _, d in palavras] == [False, True, False, False], palavras)
+    check("tira os asteriscos", all("*" not in p for p, _ in palavras), palavras)
+
+    sem_marca = th.parse_highlight("PERDEU TUDO AGORA")
+    check("sem marcacao destaca a maior palavra",
+          sum(1 for _, d in sem_marca if d) == 1 and dict(sem_marca)["PERDEU"], sem_marca)
+    check("texto vazio nao quebra", th.parse_highlight("   ") == [])
+
+
+def test_eta() -> None:
+    """A barra precisa dizer quanto falta — 'burning 10%' por 1h nao informa nada."""
+    print("painel / tempo estimado")
+    import datetime as dt
+    from app import db
+
+    agora = dt.datetime.now(dt.timezone.utc)
+    def ep(progress, minutos_atras, status="clipping", started=True):
+        inicio = (agora - dt.timedelta(minutes=minutos_atras)).isoformat()
+        return {"status": status, "progress": progress, "started_at": inicio if started else None}
+
+    # 25% em 5 min => faltam 75%, ou seja ~15 min.
+    e = db.eta_seconds(ep(0.25, 5))
+    check("regra de tres bate", 14 * 60 <= e <= 16 * 60, e)
+
+    # Quanto mais perto do fim, menor o que falta.
+    check("diminui conforme avanca", db.eta_seconds(ep(0.9, 45)) < db.eta_seconds(ep(0.3, 45)))
+
+    check("terminado nao tem eta", db.eta_seconds(ep(1.0, 30, "done")) is None)
+    check("falhou nao tem eta", db.eta_seconds(ep(0.4, 30, "failed")) is None)
+    check("na fila nao tem eta", db.eta_seconds(ep(0.0, 30, "queued")) is None)
+    check("progresso baixo demais nao estima", db.eta_seconds(ep(0.02, 30)) is None)
+    check("sem started_at nao estima", db.eta_seconds(ep(0.5, 30, started=False)) is None)
+    check("started_at invalido nao quebra",
+          db.eta_seconds({"status": "clipping", "progress": 0.5, "started_at": "ontem"}) is None)
+
+    # started_at e o inicio do PROCESSAMENTO, nao da fila: um episodio que esperou
+    # 3h para ser pego nao pode reportar 3h de trabalho.
+    esperou = db.eta_seconds(ep(0.5, 10))
+    check("fila nao infla a estimativa", esperou is not None and esperou < 20 * 60, esperou)
+
+
 def test_burn_progress() -> None:
     """A barra da queima tem que andar de verdade — 10% parado por 1h e igual a travado."""
     print("queima / progresso real")
@@ -665,6 +759,8 @@ def main() -> int:
     test_reframe_track()
     test_focus_expression()
     test_same_language_passthrough(tmp)
+    test_thumb_colors()
+    test_eta()
     test_burn_progress()
     test_youtube_metadata()
 

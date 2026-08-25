@@ -357,6 +357,7 @@ def api_episode(episode_id: int):
             "id": episode["id"],
             "status": episode["status"],
             "progress": episode["progress"],
+            "eta_seconds": db.eta_seconds(episode),
             "title": episode["title"],
             "error": episode["error"],
             "clips": len([c for c in db.list_clips(episode_id) if c["status"] == "ready"]),

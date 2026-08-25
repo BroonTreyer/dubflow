@@ -40,7 +40,12 @@
         <span class="tag {% if ep.status == 'done' %}done{% elif ep.status == 'failed' %}failed
               {% elif ep.status != 'queued' %}run{% endif %}">{{ ep.status }}</span>
       </td>
-      <td><div class="bar"><i style="width: {{ (ep.progress * 100) | round(0) }}%"></i></div></td>
+      <td style="min-width:190px">
+        <div class="bar"><i style="width: {{ (ep.progress * 100) | round(0) }}%"></i></div>
+        <div class="muted" style="font-size:12px;margin-top:3px">
+          <span class="pct">{{ (ep.progress * 100) | round(0) | int }}%</span><span class="eta"></span>
+        </div>
+      </td>
       <td class="muted">{{ ep.license_status }}</td>
     </tr>
     {% endfor %}
@@ -70,6 +75,16 @@
     return !TERMINAIS.includes(estado);
   });
 
+  // "~7 min restantes". Acima de 1h30 o numero em minutos vira ilegivel.
+  const formatarEta = (s) => {
+    if (s === null || s === undefined) return '';
+    if (s < 60) return ' · menos de 1 min';
+    const min = Math.round(s / 60);
+    if (min < 90) return ` · ~${min} min restantes`;
+    const h = Math.floor(min / 60);
+    return ` · ~${h}h${String(min % 60).padStart(2, '0')} restantes`;
+  };
+
   const timer = setInterval(async () => {
     const linhas = emAndamento();
     if (!linhas.length) { clearInterval(timer); return; }  // nada rodando: para de perguntar
@@ -79,7 +94,10 @@
         if (!res.ok) continue;
         const data = await res.json();
         tr.querySelector('.tag').textContent = data.status;
-        tr.querySelector('.bar > i').style.width = (data.progress * 100).toFixed(0) + '%';
+        const pct = (data.progress * 100).toFixed(0);
+        tr.querySelector('.bar > i').style.width = pct + '%';
+        tr.querySelector('.pct').textContent = pct + '%';
+        tr.querySelector('.eta').textContent = formatarEta(data.eta_seconds);
       } catch (e) { /* rede instavel: tenta de novo no proximo ciclo */ }
     }
   }, 4000);
