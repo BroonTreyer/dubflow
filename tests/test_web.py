@@ -339,6 +339,25 @@ def main() -> int:
     check("dashboard mostra a conta global e os KPIs",
           "Painel geral" in r.text and "Conta global" in r.text)
 
+    print("molde do corte (card)")
+    from app.pipeline import card as card_mod
+    card_png = settings.data_dir / "card_test.png"
+    card_res = card_mod.render_overlay("ELE *MENTIU* NA CARA", "SEGUE O PERFIL", card_png)
+    try:
+        from PIL import Image as _Img
+        _alpha = _Img.open(card_png).split()[-1]
+        _meio = sum(1 for x in range(0, 1080, 40) if _alpha.getpixel((x, 950)) > 0)
+        check("overlay gera PNG 1080x1920", card_res is not None and card_png.exists())
+        check("miolo do molde e transparente (video aparece)", _meio == 0, _meio)
+    except ImportError:
+        check("sem Pillow o molde degrada para None", card_res is None)
+    check("home mostra o checkbox de molde", 'name="card"' in client.get("/").text)
+    r = client.post("/episodes", data={"url": "https://youtu.be/cardtest", "card": "on",
+                                       "csrf": token}, follow_redirects=False)
+    ep_card = [e for e in db.list_episodes() if "cardtest" in e["source_url"]][0]
+    check("checkbox molde grava card_layout no episodio", ep_card["card_layout"] == 1,
+          ep_card["card_layout"])
+
     from app.publishers import stats_for
     check("stats_for de plataforma sem suporte e None", stats_for("telegram", "x") is None)
 

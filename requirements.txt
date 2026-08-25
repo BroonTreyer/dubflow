@@ -8,6 +8,10 @@ python-dotenv>=1.0
 python-multipart>=0.0.20
 requests>=2.32
 
+# Texto estampado na capa (thumbnail.py) e no molde do corte (card.py): faixa do
+# gancho + CTA. Sem Pillow essas features degradam em silencio (saem sem texto).
+Pillow>=10.0
+
 # Deteccao de rosto para o reframe 9:16 focado na cena (opencv sem GUI).
 # Fixado em 4.x: o 5.0 reestruturou a API e removeu cv2.CascadeClassifier.
 opencv-python-headless>=4.10,<5

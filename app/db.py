@@ -68,6 +68,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     -- Classificado automaticamente; editavel no painel. NULL = ainda nao definido.
     segment         TEXT,
     license_status  TEXT NOT NULL DEFAULT 'unknown',
+    -- Renderizar os cortes com o molde (faixa do gancho + CTA sobrepostos)? 0/1.
+    -- Escolhido por episodio na ingestao; default vem de settings.clip_card.
+    card_layout     INTEGER NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'queued',
     progress        REAL NOT NULL DEFAULT 0,
     error           TEXT,
@@ -246,6 +249,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE episodes ADD COLUMN started_at TEXT")
         if "segment" not in ep_columns:
             conn.execute("ALTER TABLE episodes ADD COLUMN segment TEXT")
+        if "card_layout" not in ep_columns:
+            conn.execute(
+                "ALTER TABLE episodes ADD COLUMN card_layout INTEGER NOT NULL DEFAULT 0"
+            )
 
         # Multi-conta: cadencia de gotejamento por canal (bancos que ja tinham a
         # tabela channels sem a coluna).
@@ -370,15 +377,16 @@ def find_active_by_url(source_url: str) -> dict[str, Any] | None:
 
 
 def create_episode(source_url: str, license_status: str = "unknown",
-                   lang_dst: str | None = None) -> int:
+                   lang_dst: str | None = None, card_layout: bool = False) -> int:
     if license_status not in LICENSE_STATES:
         raise ValueError(f"license_status invalido: {license_status}")
     ts = now()
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO episodes (source_url, license_status, lang_dst, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (source_url, license_status, (lang_dst or settings.target_lang), ts, ts),
+            "INSERT INTO episodes (source_url, license_status, lang_dst, card_layout,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (source_url, license_status, (lang_dst or settings.target_lang),
+             1 if card_layout else 0, ts, ts),
         )
         return int(cur.lastrowid)
 

@@ -821,12 +821,17 @@ def render_clip(
     clip: dict[str, Any],
     output_path: Path,
     work_dir: Path,
+    card: bool = False,
 ) -> Path:
     """Corta o trecho, converte para 9:16 focando na cena e queima a legenda.
 
     O reframe (CLIP_REFRAME) recorta uma janela vertical que preenche a tela: em
     'face' a janela e posicionada sobre o rosto detectado; em 'center' fica no
     meio; 'pad' mantem o encaixe antigo com fundo borrado.
+
+    Com `card`, sobrepoe o molde opcional (faixa do gancho + CTA) por cima do
+    video, que continua em tela cheia. O molde e best-effort: se falhar, o corte
+    sai sem ele.
     """
     start, end = float(clip["start"]), float(clip["end"])
     duration = end - start
@@ -847,11 +852,28 @@ def render_clip(
     mode, focus = _resolve_reframe(video_path, start, duration)
     filter_complex = _reframe_filter(mode, focus, ass_path)
 
+    # Molde opcional: gera um PNG RGBA (faixa do gancho + CTA) e o sobrepoe sobre o
+    # video 9:16 ja com a legenda. Best-effort: sem PNG, o corte sai normal.
+    overlay_png = None
+    if card:
+        from app.pipeline import card as card_mod
+        hook = clip.get("hook") or clip.get("thumb_text") or clip.get("title") or ""
+        overlay_png = card_mod.render_overlay(
+            hook, settings.clip_cta_text, work_dir / f"card_{output_path.stem}.png"
+        )
+
+    inputs = ["-i", str(video_path)]
+    out_label = "[v]"
+    if overlay_png is not None:
+        inputs += ["-i", str(overlay_png)]
+        filter_complex += ";[v][1:v]overlay=0:0[vout]"
+        out_label = "[vout]"
+
     cmd = [
         "ffmpeg", "-y",
-        "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", "-i", str(video_path),
+        "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", *inputs,
         "-filter_complex", filter_complex,
-        "-map", "[v]", "-map", "0:a?",
+        "-map", out_label, "-map", "0:a?",
         "-c:v", "libx264", "-preset", "medium", "-crf", "21",
         "-r", "30", "-pix_fmt", "yuv420p",
         *_audio_args(),

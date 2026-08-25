@@ -116,6 +116,8 @@ def index(request: Request):
             "publishers": publisher_status(),
             "license_states": db.LICENSE_STATES,
             "target_langs": TARGET_LANGS,
+            "card_default": settings.clip_card,
+            "cta_text": settings.clip_cta_text,
             "csrf": security.csrf_token(request),
         },
     )
@@ -425,6 +427,7 @@ def create_episode(
     url: str = Form(...),
     license_status: str = Form("unknown"),
     lang_dst: str = Form(""),
+    card: str = Form(""),
     csrf: str = Form(""),
 ):
     security.require_csrf(request, csrf)
@@ -443,7 +446,7 @@ def create_episode(
     if existing:
         return RedirectResponse(f"/episodes/{existing['id']}?duplicado=1", status_code=303)
 
-    db.create_episode(url, license_status, lang_dst)
+    db.create_episode(url, license_status, lang_dst, card_layout=(card == "on"))
     return RedirectResponse("/", status_code=303)
 
 

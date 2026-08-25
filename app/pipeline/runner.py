@@ -43,14 +43,19 @@ def _render_variants(
     clip_dir: Path,
     idx: int,
     work_dir: Path,
+    card: bool = False,
 ) -> None:
     """Renderiza o corte vertical (obrigatorio) e, se ativados, a versao horizontal
     e a thumbnail (ambos best-effort — falha neles nao reprova o corte).
 
+    `card` liga o molde (gancho + CTA) so no corte vertical (Shorts/Reels); a
+    versao horizontal 16:9 sai sempre limpa.
+
     Levanta RuntimeError so se o corte vertical falhar; o chamador marca 'failed'.
     """
     nome = f"ep{episode_id:05d}_corte_{idx:02d}"
-    vertical = clips.render_clip(video_path, translated, clip, clip_dir / f"{nome}.mp4", work_dir)
+    vertical = clips.render_clip(video_path, translated, clip, clip_dir / f"{nome}.mp4",
+                                 work_dir, card=card)
     fields: dict[str, Any] = {"path": str(vertical), "status": "ready"}
 
     if settings.clip_render_wide:
@@ -193,7 +198,8 @@ def process_episode(episode_id: int) -> dict[str, Any]:
             # de outro episodio.
             try:
                 _render_variants(
-                    episode_id, clip_id, clip, video_path, translated, clip_dir, i + 1, work_dir
+                    episode_id, clip_id, clip, video_path, translated, clip_dir, i + 1,
+                    work_dir, card=bool(episode.get("card_layout")),
                 )
             except RuntimeError as exc:
                 log.error("[ep %s] corte %d falhou: %s", episode_id, i + 1, exc)
@@ -307,7 +313,7 @@ def rerender_clips(episode_id: int) -> int:
         try:
             _render_variants(
                 episode_id, clip["id"], clip, video, translated, clip_dir,
-                clip["idx"] + 1, work_dir,
+                clip["idx"] + 1, work_dir, card=bool(episode.get("card_layout")),
             )
             refeitos += 1
         except RuntimeError as exc:

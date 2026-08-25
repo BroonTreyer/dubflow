@@ -82,6 +82,12 @@ class Settings:
     clip_render_wide: bool = _bool("CLIP_RENDER_WIDE", True)
     # Gera thumbnail 16:9 de cada corte.
     clip_thumbnail: bool = _bool("CLIP_THUMBNAIL", True)
+    # Molde opcional do corte vertical: faixa com o gancho no topo + CTA embaixo,
+    # sobrepostos (o video continua em tela cheia). Padrao do checkbox na ingestao;
+    # cada episodio decide ligar ou nao. CTA em texto puro (a fonte pesada nao
+    # desenha emoji) — troque por @seu_perfil etc.
+    clip_card: bool = _bool("CLIP_CARD", False)
+    clip_cta_text: str = os.getenv("CLIP_CTA_TEXT", "SEGUE O PERFIL")
     # Normaliza o volume (loudnorm -14 LUFS) no render dos cortes.
     audio_loudnorm: bool = _bool("AUDIO_LOUDNORM", True)
 

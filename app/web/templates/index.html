@@ -25,6 +25,12 @@
       </select>
       <button type="submit">Processar</button>
     </div>
+    <div class="row" style="margin-top:10px">
+      <label class="muted" title="faixa com o gancho no topo + CTA embaixo, sobrepostos (o vídeo continua em tela cheia)">
+        <input type="checkbox" name="card" {% if card_default %}checked{% endif %}>
+        gerar com molde <span class="muted">(gancho + "{{ cta_text }}")</span>
+      </label>
+    </div>
   </form>
   <p class="muted" style="margin-bottom:0">
     Legenda, cortes e publicacao social funcionam com qualquer origem.
