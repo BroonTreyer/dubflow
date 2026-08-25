@@ -498,6 +498,42 @@ def test_focus_expression() -> None:
           cadeia[:90])
 
 
+def test_same_language_passthrough(tmp: pathlib.Path) -> None:
+    """Video ja em pt-BR: legenda sai da transcricao, sem pagar traducao pt->pt."""
+    print("traducao / video ja no idioma de destino")
+
+    check("pt vira pt-BR", translate.same_language("pt", "pt-BR"))
+    check("aceita variante e caixa", translate.same_language("PT_br", "pt-BR"))
+    check("ingles nao e portugues", not translate.same_language("en", "pt-BR"))
+    check("turco nao e portugues", not translate.same_language("tr", "pt-BR"))
+    check("idioma ausente nao passa direto", not translate.same_language(None, "pt-BR"))
+    check("destino ausente nao passa direto", not translate.same_language("pt", None))
+
+    segs = [
+        {"id": 0, "start": 0.0, "end": 2.0, "text": "Bom dia, pessoal."},
+        {"id": 1, "start": 2.0, "end": 4.5, "text": "Hoje eu vou falar de três coisas."},
+    ]
+    # Sem chave de API configurada, qualquer chamada ao Claude explodiria — se este
+    # teste passa, e porque o caminho realmente nao chamou a API.
+    out = translate.translate_segments(segs, {"lang_src": "pt", "title": "x", "channel": "y"})
+    check("mantem a quantidade de segmentos", len(out) == 2, len(out))
+    check("texto chega intacto na legenda",
+          [s["text"] for s in out] == [s["text"] for s in segs], out)
+    check("acentuacao preservada", "três" in out[1]["text"], out[1]["text"])
+    check("nao marca como sem traducao", all(not s["untranslated"] for s in out), out)
+    check("guarda o original em text_src", out[0]["text_src"] == "Bom dia, pessoal.")
+    check("preserva timestamps", (out[1]["start"], out[1]["end"]) == (2.0, 4.5), out[1])
+
+    # O que importa no fim: a legenda existe e tem o texto certo.
+    srt = subtitles.write_srt(out, tmp / "ptbr.srt").read_text(encoding="utf-8")
+    check("gera SRT com as duas falas", srt.count("-->") == 2, srt)
+    check("SRT tem o texto original", "Bom dia, pessoal." in srt, srt[:120])
+
+    # O atalho vale so para o mesmo idioma: um episodio turco continua indo para o
+    # tradutor (o passthrough entregaria a legenda em turco).
+    check("idioma diferente nao pega o atalho", not translate.same_language("tr", "pt-BR"))
+
+
 def test_burn_progress() -> None:
     """A barra da queima tem que andar de verdade — 10% parado por 1h e igual a travado."""
     print("queima / progresso real")
@@ -578,8 +614,19 @@ def test_youtube_metadata() -> None:
     vazio = youtube._metadata("", None, is_short=True)[0]
     check("titulo nunca vazio", vazio != "", vazio)
 
-    # Sem credenciais no ambiente de teste, o publisher se declara nao configurado.
-    check("nao configurado sem credenciais", youtube.configured() is False)
+    # configured() le o cofre da maquina, entao o teste precisa isolar a leitura:
+    # antes ele so passava enquanto ninguem tivesse conectado o YouTube de verdade.
+    original = youtube.credentials.get
+    try:
+        youtube.credentials.get = lambda key: ""
+        check("nao configurado sem credenciais", youtube.configured() is False)
+        youtube.credentials.get = lambda key: "" if key == "YOUTUBE_REFRESH_TOKEN" else "x"
+        check("faltando so o refresh token ainda e nao configurado",
+              youtube.configured() is False)
+        youtube.credentials.get = lambda key: "x"
+        check("configurado com o cofre completo", youtube.configured() is True)
+    finally:
+        youtube.credentials.get = original
 
     # Parser das metricas (views/curtidas) da resposta do YouTube.
     parsed = youtube._parse_stats(
@@ -617,6 +664,7 @@ def main() -> int:
     test_reframe_two_people()
     test_reframe_track()
     test_focus_expression()
+    test_same_language_passthrough(tmp)
     test_burn_progress()
     test_youtube_metadata()
 

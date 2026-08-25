@@ -177,6 +177,31 @@ def _parse(response) -> dict[int, str]:
     return {int(item["id"]): item["text"].strip() for item in data.get("segments", [])}
 
 
+def same_language(src: str | None, dst: str | None) -> bool:
+    """Origem e destino sao o mesmo idioma? Compara so a base ('pt' == 'pt-BR').
+
+    O Whisper devolve o codigo curto ("pt"), enquanto TARGET_LANG costuma trazer a
+    variante regional ("pt-BR"). Sem normalizar, um video ja em portugues seria
+    "traduzido" de pt para pt-BR.
+    """
+    if not src or not dst:
+        return False
+    base = lambda s: s.strip().lower().replace("_", "-").split("-")[0]  # noqa: E731
+    return base(src) == base(dst)
+
+
+def passthrough(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Usa a transcricao como texto final, sem passar pelo tradutor.
+
+    Mantem o mesmo formato de translate_segments para o resto do pipeline nao
+    saber a diferenca: legenda, cortes e karaoke seguem iguais.
+    """
+    return [
+        {**seg, "text_src": seg["text"], "text": seg["text"], "untranslated": False}
+        for seg in segments
+    ]
+
+
 def translate_segments(
     segments: list[dict[str, Any]],
     meta: dict[str, Any],
@@ -186,6 +211,16 @@ def translate_segments(
     """Traduz todos os segmentos preservando ids e timestamps."""
     if not segments:
         return []
+
+    # Video ja no idioma de destino: traduzir seria pagar a API para reescrever um
+    # texto que ja esta certo — e o modelo, aplicando as regras de reformulacao e
+    # o limite de caracteres, mudaria falas sem necessidade.
+    if same_language(meta.get("lang_src"), settings.target_lang):
+        log.info("origem ja e %s — legenda sai da transcricao, sem traduzir",
+                 settings.target_lang)
+        if on_progress:
+            on_progress(1.0, "sem traducao (mesmo idioma)")
+        return passthrough(segments)
 
     client = _client()
     blocks = _build_blocks(segments)
@@ -326,6 +361,11 @@ def translate_segments_batch(
 
     if not segments:
         return []
+
+    if same_language(meta.get("lang_src"), settings.target_lang):
+        log.info("origem ja e %s — legenda sai da transcricao, sem traduzir",
+                 settings.target_lang)
+        return passthrough(segments)
 
     client = _client()
     blocks = _build_blocks(segments)
