@@ -57,6 +57,11 @@ _CLASSIFY_SCHEMA = {
 }
 
 
+# Mercado do canal -> idioma da legenda que ele recebe. Um episodio so vai para
+# canais cujo idioma bate com o idioma em que ele foi legendado (lang_dst).
+MARKET_LANG = {"BR": "pt-BR", "US": "en", "ES": "es"}
+
+
 def _slug(value: str | None) -> str:
     """Normaliza para comparar segmento do episodio com nicho do canal.
 
@@ -65,6 +70,16 @@ def _slug(value: str | None) -> str:
     """
     base = archive.slugify(value or "")
     return unicodedata.normalize("NFKD", base).encode("ascii", "ignore").decode("ascii")
+
+
+def _base_lang(code: str | None) -> str:
+    return (code or "").strip().lower().replace("_", "-").split("-")[0]
+
+
+def _channel_lang(channel: dict[str, Any]) -> str:
+    """Idioma (base) do canal, derivado do mercado. Mercado desconhecido -> pt-BR."""
+    market = (channel.get("market") or "").strip().upper()
+    return _base_lang(MARKET_LANG.get(market, settings.target_lang))
 
 
 # ------------------------------------------------------------------- classificacao
@@ -248,11 +263,16 @@ def distribute_episode(episode_id: int,
         return {"status": "nao_classificado", "scheduled": 0}
 
     seg_slug = _slug(segment)
+    ep_lang = _base_lang(episode.get("lang_dst") or settings.target_lang)
+    # Casa por segmento E por idioma: um episodio pt-BR nunca vai para um canal US.
     matching = sorted(
-        [c for c in channels if _slug(c["niche"]) == seg_slug], key=lambda c: c["id"]
+        [c for c in channels
+         if _slug(c["niche"]) == seg_slug and _channel_lang(c) == ep_lang],
+        key=lambda c: c["id"],
     )
     if not matching:
-        return {"status": "sem_canal_para_segmento", "segment": segment, "scheduled": 0}
+        return {"status": "sem_canal_para_segmento", "segment": segment,
+                "lang": ep_lang, "scheduled": 0}
 
     clips = db.clips_ready_without_posts(episode_id)
     if not clips:

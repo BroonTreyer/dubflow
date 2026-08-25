@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS channels (
     platform    TEXT NOT NULL,          -- youtube|instagram|tiktok|telegram
     market      TEXT NOT NULL DEFAULT 'BR',   -- BR|US|... (afeta idioma/RPM alvo)
     niche       TEXT,                   -- segmento que o canal atende (roteia os cortes)
+    -- Rotulo do projeto do Google Cloud (YouTube). Canais com o MESMO project
+    -- dividem a cota diaria de upload da API. Vazio = projeto proprio (recomendado).
+    project     TEXT,
     -- Ritmo do gotejamento: quantos cortes por dia este canal recebe no agendamento
     -- automatico. Conta nova posta pouco; conta aquecida pode subir.
     posts_per_day INTEGER NOT NULL DEFAULT 3,
@@ -169,7 +172,7 @@ CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
 # Criado em init_db logo apos garantir a coluna.
 
 CHANNEL_STATES = ("active", "paused")
-CHANNEL_COLUMNS = {"name", "platform", "market", "niche", "status", "posts_per_day"}
+CHANNEL_COLUMNS = {"name", "platform", "market", "niche", "status", "posts_per_day", "project"}
 
 
 def now() -> str:
@@ -251,6 +254,8 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE channels ADD COLUMN posts_per_day INTEGER NOT NULL DEFAULT 3"
             )
+        if "project" not in ch_columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN project TEXT")
 
         # Migracoes das colunas de corte horizontal, thumbnail e orientacao do post.
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
@@ -364,7 +369,8 @@ def find_active_by_url(source_url: str) -> dict[str, Any] | None:
     return _episode_row(row) if row else None
 
 
-def create_episode(source_url: str, license_status: str = "unknown") -> int:
+def create_episode(source_url: str, license_status: str = "unknown",
+                   lang_dst: str | None = None) -> int:
     if license_status not in LICENSE_STATES:
         raise ValueError(f"license_status invalido: {license_status}")
     ts = now()
@@ -372,7 +378,7 @@ def create_episode(source_url: str, license_status: str = "unknown") -> int:
         cur = conn.execute(
             "INSERT INTO episodes (source_url, license_status, lang_dst, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?)",
-            (source_url, license_status, settings.target_lang, ts, ts),
+            (source_url, license_status, (lang_dst or settings.target_lang), ts, ts),
         )
         return int(cur.lastrowid)
 
@@ -701,7 +707,8 @@ def set_subscription_expiry(buyer_tg_id: str, expires_at: str) -> None:
 
 
 def create_channel(name: str, platform: str, market: str = "BR",
-                   niche: str | None = None, posts_per_day: int = 3) -> int:
+                   niche: str | None = None, posts_per_day: int = 3,
+                   project: str | None = None) -> int:
     """Registra uma conta de destino (um canal do YouTube, um perfil do TikTok...).
 
     Cada canal tem seu proprio cofre de credenciais (ver app/credentials.py); e a

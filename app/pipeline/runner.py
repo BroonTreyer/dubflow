@@ -130,6 +130,7 @@ def process_episode(episode_id: int) -> dict[str, Any]:
             "title": info["title"],
             "channel": info["channel"],
             "lang_src": result["language"],
+            "lang_dst": episode.get("lang_dst") or settings.target_lang,
         }
         glossary = _glossary_for(info["channel"])
 

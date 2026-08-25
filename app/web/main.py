@@ -115,6 +115,7 @@ def index(request: Request):
             "episodes": db.list_episodes(),
             "publishers": publisher_status(),
             "license_states": db.LICENSE_STATES,
+            "target_langs": TARGET_LANGS,
             "csrf": security.csrf_token(request),
         },
     )
@@ -322,11 +323,17 @@ def remove_channel(request: Request, channel_id: int, csrf: str = Form("")):
     return RedirectResponse("/channels", status_code=303)
 
 
+# Idiomas de destino oferecidos na ingestao (rotulo mostrado ao usuario).
+TARGET_LANGS = [("pt-BR", "Português (BR)"), ("en", "English (US)"), ("es", "Español")]
+_TARGET_LANG_CODES = {code for code, _ in TARGET_LANGS}
+
+
 @app.post("/episodes", dependencies=panel)
 def create_episode(
     request: Request,
     url: str = Form(...),
     license_status: str = Form("unknown"),
+    lang_dst: str = Form(""),
     csrf: str = Form(""),
 ):
     security.require_csrf(request, csrf)
@@ -336,6 +343,8 @@ def create_episode(
         raise HTTPException(400, "informe uma URL http(s) valida")
     if license_status not in db.LICENSE_STATES:
         license_status = "unknown"
+    if lang_dst not in _TARGET_LANG_CODES:
+        lang_dst = settings.target_lang
 
     # Reprocessar o mesmo video paga a traducao de novo — o erro mais caro que um
     # duplo clique consegue causar. Manda para o episodio existente.
@@ -343,7 +352,7 @@ def create_episode(
     if existing:
         return RedirectResponse(f"/episodes/{existing['id']}?duplicado=1", status_code=303)
 
-    db.create_episode(url, license_status)
+    db.create_episode(url, license_status, lang_dst)
     return RedirectResponse("/", status_code=303)
 
 

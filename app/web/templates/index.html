@@ -17,12 +17,20 @@
         <option value="owned">conteudo proprio</option>
         <option value="public_domain">dominio publico / CC</option>
       </select>
+      <label class="muted" for="lang_dst">Idioma da legenda</label>
+      <select name="lang_dst" id="lang_dst" title="define para quais canais os cortes serão roteados">
+        {% for code, rotulo in target_langs %}
+        <option value="{{ code }}">{{ rotulo }}</option>
+        {% endfor %}
+      </select>
       <button type="submit">Processar</button>
     </div>
   </form>
   <p class="muted" style="margin-bottom:0">
     Legenda, cortes e publicacao social funcionam com qualquer origem.
-    O catalogo pago do Telegram entrega apenas episodios com licenca definida.
+    O <strong>idioma</strong> define o mercado: os cortes só vão para canais daquele
+    idioma (ex.: legenda em inglês → canais US). Para servir BR e US do mesmo vídeo,
+    processe duas vezes.
   </p>
 </div>
 

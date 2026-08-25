@@ -79,6 +79,65 @@ Responda apenas com o objeto JSON pedido pelo schema. Sem comentarios, sem \
 explicacoes, sem texto fora do JSON.
 """
 
+# Nome legivel de cada idioma de destino suportado (usado no prompt generico).
+LANG_NAMES = {"pt-BR": "portugues brasileiro", "en": "ingles (dos EUA)", "es": "espanhol"}
+
+# Prompt para idiomas que NAO sao pt-BR. O pt-BR continua usando SYSTEM_PROMPT
+# acima, palavra por palavra, para preservar a qualidade ja validada (e o cache).
+GENERIC_SYSTEM_PROMPT = """\
+Voce e um tradutor profissional de legendas para {lang}, com experiencia em \
+conteudo de YouTube longform, podcasts e documentarios.
+
+Voce recebe blocos de segmentos transcritos automaticamente e devolve a traducao \
+de cada um para {lang}, mantendo o mesmo `id`.
+
+REGRAS DE TRADUCAO
+
+1. Traduza o sentido, nao as palavras. O resultado deve soar como um falante \
+nativo de {lang} falando naturalmente, nao como texto traduzido.
+
+2. Respeite o orcamento de caracteres (`budget`) de cada segmento — a legenda \
+precisa ser lida no tempo da fala. Se nao couber, corte redundancia (interjeicoes, \
+muletas), nunca informacao que muda o sentido.
+
+3. Mantenha o registro do falante (informal continua informal, tecnico mantem \
+precisao, palavrao vira palavrao com a mesma intensidade).
+
+4. Trate a transcricao como imperfeita: o ASR erra nomes, siglas e numeros. Use a \
+palavra correta quando o contexto deixar claro.
+
+5. Termos tecnicos consagrados em ingles no meio tecnico permanecem em ingles.
+
+6. Numeros e unidades no formato padrao de {lang}. Nao converta o valor de moedas.
+
+7. Nomes proprios, marcas e titulos de obras permanecem como no original.
+
+8. Segmento que e so ruido/musica/interjeicao ("uh", "hmm") -> string vazia.
+
+9. Nunca junte ou divida segmentos. Um segmento de entrada = um de saida, mesmo `id`.
+
+FORMATO
+
+Responda apenas com o objeto JSON pedido pelo schema. Sem texto fora do JSON.
+"""
+
+
+def _base_lang(code: str | None) -> str:
+    return (code or "").strip().lower().replace("_", "-").split("-")[0]
+
+
+def _target(meta: dict[str, Any] | None) -> str:
+    """Idioma de destino do episodio (meta['lang_dst']), com fallback global."""
+    return ((meta or {}).get("lang_dst") or settings.target_lang or "pt-BR")
+
+
+def _system_prompt(target_lang: str) -> str:
+    """pt-BR usa o prompt validado, verbatim; os demais, o generico parametrizado."""
+    if _base_lang(target_lang) == "pt":
+        return SYSTEM_PROMPT
+    return GENERIC_SYSTEM_PROMPT.format(lang=LANG_NAMES.get(target_lang, target_lang))
+
+
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -130,7 +189,7 @@ def _user_content(
             "titulo": meta.get("title"),
             "canal": meta.get("channel"),
             "idioma_origem": meta.get("lang_src"),
-            "idioma_destino": settings.target_lang,
+            "idioma_destino": _target(meta),
         },
         "glossario": glossary or {},
         "contexto_anterior_ja_traduzido": context_tail,
@@ -145,19 +204,20 @@ def _user_content(
     }
     return (
         "Traduza os segmentos abaixo para "
-        f"{settings.target_lang}.\n\n"
+        f"{_target(meta)}.\n\n"
         "```json\n" + json.dumps(payload, ensure_ascii=False, indent=1) + "\n```"
     )
 
 
-def _call_claude(client: anthropic.Anthropic, user_text: str, max_tokens: int = 16000):
+def _call_claude(client: anthropic.Anthropic, user_text: str, target_lang: str = "pt-BR",
+                 max_tokens: int = 16000):
     return client.messages.create(
         model=settings.translate_model,
         max_tokens=max_tokens,
         system=[
             {
                 "type": "text",
-                "text": SYSTEM_PROMPT,
+                "text": _system_prompt(target_lang),
                 "cache_control": {"type": "ephemeral"},
             }
         ],
@@ -215,9 +275,9 @@ def translate_segments(
     # Video ja no idioma de destino: traduzir seria pagar a API para reescrever um
     # texto que ja esta certo — e o modelo, aplicando as regras de reformulacao e
     # o limite de caracteres, mudaria falas sem necessidade.
-    if same_language(meta.get("lang_src"), settings.target_lang):
+    if same_language(meta.get("lang_src"), _target(meta)):
         log.info("origem ja e %s — legenda sai da transcricao, sem traduzir",
-                 settings.target_lang)
+                 _target(meta))
         if on_progress:
             on_progress(1.0, "sem traducao (mesmo idioma)")
         return passthrough(segments)
@@ -288,7 +348,7 @@ def _translate_block_with_retry(
 
     for attempt in range(attempts):
         try:
-            response = _call_claude(client, user_text)
+            response = _call_claude(client, user_text, _target(meta))
 
             if response.stop_reason == "refusal":
                 # Conteudo que os classificadores recusaram: preserva o original
@@ -362,13 +422,14 @@ def translate_segments_batch(
     if not segments:
         return []
 
-    if same_language(meta.get("lang_src"), settings.target_lang):
+    if same_language(meta.get("lang_src"), _target(meta)):
         log.info("origem ja e %s — legenda sai da transcricao, sem traduzir",
-                 settings.target_lang)
+                 _target(meta))
         return passthrough(segments)
 
     client = _client()
     blocks = _build_blocks(segments)
+    system_text = _system_prompt(_target(meta))
 
     requests = [
         Request(
@@ -379,7 +440,7 @@ def translate_segments_batch(
                 system=[
                     {
                         "type": "text",
-                        "text": SYSTEM_PROMPT,
+                        "text": system_text,
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
