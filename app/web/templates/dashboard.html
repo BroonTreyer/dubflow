@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Painel — dubflow{% endblock %}
+{% block content %}
+
+<style>
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:18px; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .kpi .n { font-size:26px; font-weight:600; letter-spacing:-.5px; }
+  .kpi .k { color:var(--muted); font-size:12px; margin-top:2px; }
+  .kpi .sub { color:var(--muted); font-size:11px; margin-top:6px; }
+  .cal { display:grid; grid-template-columns:repeat(auto-fill,minmax(215px,1fr)); gap:12px; }
+  .cal .day { border:1px solid var(--line); border-radius:10px; padding:12px; background:#0f1319; }
+  .cal .day h4 { margin:0 0 6px; font-size:13px; text-transform:capitalize; }
+  .cal .day .cnt { color:var(--muted); font-size:11px; }
+  .cal .slot { display:flex; gap:8px; align-items:flex-start; padding:8px 0; border-top:1px solid var(--line); }
+  .cal .slot:first-of-type { border-top:0; }
+  .cal .slot img, .cal .slot .ph { width:34px; height:60px; object-fit:cover; border-radius:4px; background:#000; flex:none; }
+  .cal .slot .t { font-weight:600; font-size:12px; line-height:1.3; }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:12px; }
+  .thumbs .c img, .thumbs .c .ph { width:100%; aspect-ratio:9/16; object-fit:cover; border-radius:8px; background:#000; display:block; }
+  .thumbs .c .ph { display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:12px; }
+  code.cmd { display:block; background:#0f1319; border:1px solid var(--line); border-radius:6px;
+             padding:7px 9px; font-size:12px; margin-top:6px; overflow-x:auto; white-space:pre; }
+</style>
+
+{% macro tname(clip) -%}
+  {{ (clip.thumb_vertical_path or clip.thumb_path or '').split('\\')[-1].split('/')[-1] }}
+{%- endmacro %}
+
+<div class="row" style="justify-content:space-between;align-items:baseline;margin-bottom:16px">
+  <h2 style="margin:0;font-size:19px">Painel geral</h2>
+  <a href="/" class="muted">+ processar novo vídeo</a>
+</div>
+
+{% if stats.episodes_total == 0 %}
+<div class="note" style="margin-bottom:18px">
+  Ainda não há episódios. Comece colando um link do YouTube na
+  <a href="/">home</a> — a legenda, os cortes e a distribuição correm sozinhos.
+</div>
+{% endif %}
+
+{# ---------------------------------------------------------------- KPIs #}
+<div class="kpis">
+  <div class="kpi">
+    <div class="n">{{ stats.episodes_total }}</div><div class="k">episódios</div>
+    <div class="sub">{{ stats.episodes_done }} prontos · {{ stats.episodes_processing }} rodando · {{ stats.episodes_failed }} falhos</div>
+  </div>
+  <div class="kpi">
+    <div class="n">{{ stats.clips_ready }}</div><div class="k">cortes prontos</div>
+    <div class="sub">{{ stats.clips_total }} no total</div>
+  </div>
+  <div class="kpi">
+    <div class="n">{{ stats.posts_published }}</div><div class="k">publicados</div>
+    <div class="sub">{{ stats.posts_pending }} na fila · {{ stats.posts_failed }} falhos</div>
+  </div>
+  <div class="kpi">
+    <div class="n">{{ stats.posts_scheduled }}</div><div class="k">agendados</div>
+    <div class="sub">gotejamento automático</div>
+  </div>
+  <div class="kpi">
+    <div class="n">{{ '{:,}'.format(stats.views).replace(',', '.') }}</div><div class="k">views</div>
+    <div class="sub">{{ '{:,}'.format(stats.likes).replace(',', '.') }} curtidas</div>
+  </div>
+  <div class="kpi">
+    <div class="n">{{ stats.channels_active }}/{{ stats.channels_total }}</div><div class="k">canais ativos</div>
+    <div class="sub">+ conta global</div>
+  </div>
+</div>
+
+{# ---------------------------------------------------------------- pendências / instruções #}
+{% if attention %}
+<div class="panel">
+  <h2>Pendências</h2>
+  {% for a in attention %}
+  <div class="note" style="margin-bottom:10px">
+    {{ a.text }}
+    {% if a.url %} <a href="{{ a.url }}">resolver →</a>{% endif %}
+    {% if a.cmd %}<code class="cmd">{{ a.cmd }}</code>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ---------------------------------------------------------------- contas #}
+<div class="panel">
+  <h2>Contas ({{ accounts | length }})</h2>
+  <div style="overflow-x:auto">
+  <table>
+    <tr>
+      <th>Conta</th><th>Plataforma</th><th>Mercado</th><th>Projeto</th>
+      <th>Conexão</th><th>Publicados</th><th>Agendados</th><th>Views</th>
+    </tr>
+    {% for a in accounts %}
+    <tr>
+      <td><a href="{{ a.detail_url }}">{{ a.name }}</a></td>
+      <td>
+        {% if a.platforms_ready %}
+          {% for plat, ok in a.platforms_ready.items() %}
+          <span class="tag {% if ok %}done{% endif %}" style="margin:1px">{{ plat }}</span>
+          {% endfor %}
+        {% else %}
+          <span style="text-transform:capitalize">{{ a.platform }}</span>
+        {% endif %}
+      </td>
+      <td>{{ a.market or '—' }}</td>
+      <td class="muted">{{ a.project or '—' }}</td>
+      <td>
+        <span class="tag {% if a.connected %}done{% else %}failed{% endif %}">
+          {{ 'conectado' if a.connected else 'faltam credenciais' }}
+        </span>
+      </td>
+      <td>{{ a.totals.published or 0 }}</td>
+      <td class="muted">{{ a.totals.pending or 0 }}</td>
+      <td>{{ a.totals.views or 0 }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted" style="margin:12px 0 0">
+    A <strong>conta global</strong> usa o cofre de <a href="/connections">conexões</a>/.env
+    (posts sem canal). Os demais são canais — gerencie em <a href="/channels">canais</a>.
+  </p>
+</div>
+
+{# ---------------------------------------------------------------- calendário #}
+<div class="panel">
+  <h2>Calendário de publicações ({{ scheduled_count }} agendadas)</h2>
+  {% if calendar_days %}
+  <div class="cal">
+    {% for day in calendar_days %}
+    <div class="day">
+      <h4>{{ day.label }} <span class="cnt">· {{ day.posts | length }}</span></h4>
+      {% for p in day.posts %}
+      <div class="slot">
+        {% set tn = tname(p) | trim %}
+        {% if tn %}<img src="/media/{{ media_sig(tn) }}/{{ tn }}" alt="" loading="lazy">
+        {% else %}<div class="ph"></div>{% endif %}
+        <div>
+          <div class="t">{{ p.scheduled_at[11:16] }} · {{ p.channel_name or 'global' }}</div>
+          <div class="muted" style="font-size:11px">
+            <span class="tag" style="padding:0 6px">{{ p.platform }}</span>
+            {{ p.clip_yt_title or p.clip_title or ('corte #' ~ (p.clip_idx + 1)) }}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">
+    Nenhum post agendado. A distribuição automática enfileira em gotejamento quando você
+    processa um episódio com canais no segmento — ou agende manualmente na página do episódio.
+  </p>
+  {% endif %}
+</div>
+
+{# ---------------------------------------------------------------- cortes recentes #}
+<div class="panel">
+  <h2>Cortes recentes</h2>
+  {% if recent_clips %}
+  <div class="thumbs">
+    {% for clip in recent_clips %}
+    <div class="c">
+      <a href="/episodes/{{ clip.episode_id }}">
+        {% set tn = tname(clip) | trim %}
+        {% if tn %}<img src="/media/{{ media_sig(tn) }}/{{ tn }}" alt="" loading="lazy">
+        {% else %}<div class="ph">sem thumb</div>{% endif %}
+      </a>
+      <p style="margin:8px 0 2px;font-size:13px;font-weight:600;line-height:1.3">
+        {{ clip.yt_title or clip.title or ('corte #' ~ (clip.idx + 1)) }}
+      </p>
+      <p class="muted" style="margin:0;font-size:11px">
+        {{ clip.episode_title or 'episódio' }} · nota {{ clip.score | round(1) }} ·
+        {{ (clip.end - clip.start) | round(0) | int }}s
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Nenhum corte pronto ainda. Eles aparecem aqui assim que um episódio termina.</p>
+  {% endif %}
+</div>
+
+{# ---------------------------------------------------------------- métricas #}
+{% if top_posts %}
+<div class="panel">
+  <h2>Top publicações <a href="/analytics" class="muted" style="font-size:12px;font-weight:400">(ver análises →)</a></h2>
+  <table>
+    <tr><th>Vídeo</th><th>Plataforma</th><th>Views</th><th>Curtidas</th><th>Comentários</th><th>Link</th></tr>
+    {% for p in top_posts %}
+    <tr>
+      <td>{{ p.clip_yt_title or p.clip_title or p.episode_title or '—' }}</td>
+      <td>{{ p.platform }}</td>
+      <td>{{ p.views if p.views is not none else '—' }}</td>
+      <td>{{ p.likes if p.likes is not none else '—' }}</td>
+      <td>{{ p.comments if p.comments is not none else '—' }}</td>
+      <td>{% if p.permalink %}<a href="{{ p.permalink }}" target="_blank">abrir</a>{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}

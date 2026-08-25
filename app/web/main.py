@@ -121,6 +121,88 @@ def index(request: Request):
     )
 
 
+_WEEKDAYS_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+
+def _day_label(iso_date: str) -> str:
+    """'2026-08-25' -> 'seg 25/08'. Devolve o proprio texto se nao parsear."""
+    try:
+        d = datetime.fromisoformat(iso_date)
+    except (TypeError, ValueError):
+        return iso_date
+    return f"{_WEEKDAYS_PT[d.weekday()]} {d:%d/%m}"
+
+
+@app.get("/dashboard", response_class=HTMLResponse, dependencies=panel)
+def dashboard(request: Request):
+    """Visao geral: KPIs, contas (global + canais), calendario, cortes e metricas."""
+    stats = db.dashboard_stats()
+    channels = db.list_channels()
+    totals = db.channel_totals()
+
+    # Cache do status por canal (evita reabrir o cofre varias vezes por linha).
+    channel_ready = {ch["id"]: publisher_status(ch["id"]).get(ch["platform"], False)
+                     for ch in channels}
+    global_ready = publisher_status()  # conta global (cofre .env / conexoes)
+
+    accounts = [{
+        "id": None, "name": "Conta global (.env / conexões)", "platform": None,
+        "market": None, "project": None, "status": "active",
+        "platforms_ready": global_ready, "connected": any(global_ready.values()),
+        "totals": totals.get(None, {}), "detail_url": "/connections",
+    }]
+    for ch in channels:
+        accounts.append({
+            "id": ch["id"], "name": ch["name"], "platform": ch["platform"],
+            "market": ch["market"], "project": ch["project"], "status": ch["status"],
+            "platforms_ready": None, "connected": channel_ready[ch["id"]],
+            "totals": totals.get(ch["id"], {}), "detail_url": f"/channels/{ch['id']}",
+        })
+
+    # Calendario: agrupa os posts agendados por dia (YYYY-MM-DD).
+    by_day: dict[str, list[dict]] = {}
+    for post in db.scheduled_posts():
+        by_day.setdefault((post["scheduled_at"] or "")[:10], []).append(post)
+    calendar_days = [{"date": d, "label": _day_label(d), "posts": by_day[d]}
+                     for d in sorted(by_day)]
+
+    # Pendencias acionaveis (instrucoes).
+    attention: list[dict] = []
+    for ch in channels:
+        if not channel_ready[ch["id"]]:
+            attention.append({
+                "text": f"{ch['name']} ({ch['platform']}) ainda não conecta — falta o refresh token.",
+                "cmd": (f".venv\\Scripts\\python.exe -m scripts.youtube_auth --channel {ch['id']}"
+                        if ch["platform"] == "youtube" else None),
+                "url": f"/channels/{ch['id']}",
+            })
+    episodes = db.list_episodes()
+    n_failed = sum(1 for e in episodes if e["status"] == "failed")
+    if n_failed:
+        attention.append({"text": f"{n_failed} episódio(s) falharam no processamento.",
+                          "cmd": None, "url": "/"})
+    n_no_seg = sum(1 for e in episodes
+                   if e["status"] == "done" and not (e.get("segment") or "").strip())
+    if n_no_seg:
+        attention.append({
+            "text": f"{n_no_seg} episódio(s) prontos sem segmento — cortes não distribuídos.",
+            "cmd": None, "url": "/"})
+    if stats["posts_failed"]:
+        attention.append({"text": f"{stats['posts_failed']} publicação(ões) falharam.",
+                          "cmd": None, "url": "/analytics"})
+
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "stats": stats,
+        "accounts": accounts,
+        "calendar_days": calendar_days,
+        "scheduled_count": sum(len(d["posts"]) for d in calendar_days),
+        "recent_clips": db.recent_clips(),
+        "top_posts": db.analytics_posts(limit=8),
+        "attention": attention,
+        "media_sig": security.media_signature,
+    })
+
+
 @app.get("/analytics", response_class=HTMLResponse, dependencies=panel)
 def analytics(request: Request):
     posts = db.analytics_posts()

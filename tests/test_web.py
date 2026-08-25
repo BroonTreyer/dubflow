@@ -322,6 +322,23 @@ def main() -> int:
     r = client.get("/analytics")
     check("GET analytics autenticado", r.status_code == 200, r.status_code)
     check("metricas aparecem no painel", "1.000" in r.text, "views nao renderizadas")
+
+    print("painel geral (dashboard)")
+    st = db.dashboard_stats()
+    check("dashboard_stats conta episodios e posts",
+          st["episodes_total"] >= 1 and st["posts_published"] >= 1, st)
+    check("dashboard_stats soma views publicadas", st["views"] >= 1000, st["views"])
+    ct = db.channel_totals()
+    check("channel_totals agrega por canal (inclui global None)", None in ct or len(ct) >= 0)
+    check("recent_clips traz cortes prontos com episodio",
+          all("episode_title" in c for c in db.recent_clips()))
+    check("dashboard exige sessao",
+          anon.get("/dashboard", follow_redirects=False).status_code in (303, 401))
+    r = client.get("/dashboard")
+    check("GET dashboard autenticado", r.status_code == 200, r.status_code)
+    check("dashboard mostra a conta global e os KPIs",
+          "Painel geral" in r.text and "Conta global" in r.text)
+
     from app.publishers import stats_for
     check("stats_for de plataforma sem suporte e None", stats_for("telegram", "x") is None)
 

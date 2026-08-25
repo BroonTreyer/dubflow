@@ -589,6 +589,94 @@ def analytics_posts(limit: int = 200) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+# ------------------------------------------------------------------- dashboard (visao geral)
+
+
+def dashboard_stats() -> dict[str, int]:
+    """Contadores agregados para o painel de visao geral (poucas passadas no banco)."""
+    with connect() as conn:
+        ep = {r["status"]: r["n"] for r in conn.execute(
+            "SELECT status, COUNT(*) n FROM episodes GROUP BY status")}
+        po = {r["status"]: r["n"] for r in conn.execute(
+            "SELECT status, COUNT(*) n FROM posts GROUP BY status")}
+        m = conn.execute(
+            "SELECT COALESCE(SUM(views),0) v, COALESCE(SUM(likes),0) l,"
+            " COALESCE(SUM(comments),0) c FROM posts WHERE status='published'").fetchone()
+
+        def scalar(sql: str, *params: Any) -> int:
+            row = conn.execute(sql, params).fetchone()
+            return int(row[0] or 0) if row else 0
+
+        return {
+            "episodes_total": sum(ep.values()),
+            "episodes_done": ep.get("done", 0),
+            "episodes_failed": ep.get("failed", 0),
+            "episodes_queued": ep.get("queued", 0),
+            "episodes_processing": sum(
+                n for s, n in ep.items() if s not in ("done", "failed", "canceled", "queued")),
+            "clips_ready": scalar("SELECT COUNT(*) FROM clips WHERE status='ready'"),
+            "clips_total": scalar("SELECT COUNT(*) FROM clips"),
+            "posts_published": po.get("published", 0),
+            "posts_pending": po.get("pending", 0),
+            "posts_failed": po.get("failed", 0),
+            "posts_scheduled": scalar(
+                "SELECT COUNT(*) FROM posts WHERE status='pending' AND scheduled_at IS NOT NULL"),
+            "views": int(m["v"]), "likes": int(m["l"]), "comments": int(m["c"]),
+            "channels_total": scalar("SELECT COUNT(*) FROM channels"),
+            "channels_active": scalar("SELECT COUNT(*) FROM channels WHERE status='active'"),
+        }
+
+
+def scheduled_posts(limit: int = 300) -> list[dict[str, Any]]:
+    """Posts pendentes COM horario agendado, do mais proximo ao mais distante.
+
+    Base do calendario do painel. Inclui a thumb e o canal para renderizar o card.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT p.id, p.platform, p.orientation, p.scheduled_at, p.channel_id,"
+            " c.idx AS clip_idx, c.title AS clip_title, c.yt_title AS clip_yt_title,"
+            " c.thumb_vertical_path, c.thumb_path, c.episode_id,"
+            " ch.name AS channel_name"
+            " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " LEFT JOIN channels ch ON ch.id = p.channel_id"
+            " WHERE p.status = 'pending' AND p.scheduled_at IS NOT NULL"
+            " ORDER BY p.scheduled_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def recent_clips(limit: int = 12) -> list[dict[str, Any]]:
+    """Cortes prontos mais recentes, com thumbnail e o episodio de origem."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.idx, c.title, c.yt_title, c.score, c.start, c.end,"
+            " c.thumb_vertical_path, c.thumb_path, c.path, c.episode_id,"
+            " e.title AS episode_title"
+            " FROM clips c JOIN episodes e ON e.id = c.episode_id"
+            " WHERE c.status = 'ready' ORDER BY c.id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def channel_totals() -> dict[int | None, dict[str, int]]:
+    """Por canal (None = cofre global): posts publicados/pendentes e soma de metricas."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT channel_id,"
+            " SUM(CASE WHEN status='published' THEN 1 ELSE 0 END) AS published,"
+            " SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending,"
+            " COALESCE(SUM(views),0) AS views, COALESCE(SUM(likes),0) AS likes"
+            " FROM posts GROUP BY channel_id"
+        ).fetchall()
+    return {r["channel_id"]: {
+        "published": int(r["published"] or 0), "pending": int(r["pending"] or 0),
+        "views": int(r["views"] or 0), "likes": int(r["likes"] or 0),
+    } for r in rows}
+
+
 # ------------------------------------------------------------------- distribuicao automatica
 
 
