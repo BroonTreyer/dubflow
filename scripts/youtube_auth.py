@@ -17,12 +17,21 @@ Passo a passo:
 
      Cole no .env e o publisher do YouTube passa a funcionar.
 
+Multi-conta: com `--channel <id>` (o id vem do painel /channels), o script usa o
+client id/secret DAQUELE canal (do cofre, nao do .env) e grava o refresh token
+direto no cofre do canal — nada a colar, e sem risco de trocar as contas:
+
+         .venv\\Scripts\\python.exe -m scripts.youtube_auth --channel 3
+
+     Autorize logado NA conta do YouTube daquele canal.
+
 O refresh token nao expira sozinho (so se voce revogar o acesso ou trocar a
 senha). Guarde como qualquer credencial — quem o tem publica no seu canal.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 import urllib.parse
 import webbrowser
@@ -30,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 
+from app import credentials, db
 from app.config import settings
 
 SCOPE = "https://www.googleapis.com/auth/youtube.upload"
@@ -74,9 +84,35 @@ def _prompt(label: str, current: str) -> str:
     return value
 
 
+def _resolve_creds(channel_id: int | None) -> tuple[str, str]:
+    """Client id/secret da conta: do cofre do canal (multi-conta) ou do .env global."""
+    if channel_id is None:
+        return settings.youtube_client_id, settings.youtube_client_secret
+    return (credentials.get("YOUTUBE_CLIENT_ID", channel_id),
+            credentials.get("YOUTUBE_CLIENT_SECRET", channel_id))
+
+
 def main() -> int:
-    client_id = _prompt("YOUTUBE_CLIENT_ID", settings.youtube_client_id)
-    client_secret = _prompt("YOUTUBE_CLIENT_SECRET", settings.youtube_client_secret)
+    parser = argparse.ArgumentParser(
+        description="Gera o YOUTUBE_REFRESH_TOKEN. Com --channel, usa o client "
+        "id/secret daquele canal e grava o token no cofre dele (nada a colar)."
+    )
+    parser.add_argument("--channel", type=int, default=None,
+                        help="id do canal (ver painel /channels). Sem isso, usa o .env global.")
+    args = parser.parse_args()
+
+    channel = None
+    if args.channel is not None:
+        channel = db.get_channel(args.channel)
+        if channel is None:
+            print(f"Canal {args.channel} nao existe. Veja os ids em /channels.")
+            return 1
+        print(f"Gerando refresh token para o canal {args.channel}: '{channel['name']}'.")
+        print("IMPORTANTE: autorize logado NA conta do YouTube deste canal.\n")
+
+    cid_atual, secret_atual = _resolve_creds(args.channel)
+    client_id = _prompt("YOUTUBE_CLIENT_ID", cid_atual)
+    client_secret = _prompt("YOUTUBE_CLIENT_SECRET", secret_atual)
 
     params = urllib.parse.urlencode(
         {
@@ -123,8 +159,14 @@ def main() -> int:
         return 1
 
     print("\n" + "=" * 60)
-    print("Sucesso! Cole a linha abaixo no seu .env:\n")
-    print(f"YOUTUBE_REFRESH_TOKEN={refresh}")
+    if args.channel is not None:
+        credentials.save({"YOUTUBE_REFRESH_TOKEN": refresh}, args.channel)
+        print(f"Sucesso! Refresh token gravado no cofre do canal {args.channel} "
+              f"('{channel['name']}').")
+        print("Nada a colar — o publisher do YouTube ja pode postar por este canal.")
+    else:
+        print("Sucesso! Cole a linha abaixo no seu .env:\n")
+        print(f"YOUTUBE_REFRESH_TOKEN={refresh}")
     print("=" * 60)
     return 0
 
