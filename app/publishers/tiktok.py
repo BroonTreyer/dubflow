@@ -25,13 +25,13 @@ API = "https://open.tiktokapis.com/v2"
 name = "tiktok"
 
 
-def configured() -> bool:
-    return bool(credentials.get("TIKTOK_ACCESS_TOKEN"))
+def configured(channel_id: int | None = None) -> bool:
+    return bool(credentials.get("TIKTOK_ACCESS_TOKEN", channel_id))
 
 
 def publish(video_path: Path, caption: str, title: str | None = None,
-            thumb_path: Path | None = None) -> PublishResult:
-    if not configured():
+            thumb_path: Path | None = None, channel_id: int | None = None) -> PublishResult:
+    if not configured(channel_id):
         return PublishResult(False, error="TikTok nao configurado (TIKTOK_ACCESS_TOKEN)")
 
     video_path = Path(video_path)
@@ -40,7 +40,7 @@ def publish(video_path: Path, caption: str, title: str | None = None,
 
     size = video_path.stat().st_size
     headers = {
-        "Authorization": f"Bearer {credentials.get("TIKTOK_ACCESS_TOKEN")}",
+        "Authorization": f"Bearer {credentials.get("TIKTOK_ACCESS_TOKEN", channel_id)}",
         "Content-Type": "application/json; charset=UTF-8",
     }
 
@@ -95,9 +95,9 @@ def publish(video_path: Path, caption: str, title: str | None = None,
         return PublishResult(False, error=f"erro de rede: {exc}")
 
 
-def stats(remote_id: str) -> dict[str, int | None] | None:
+def stats(remote_id: str, channel_id: int | None = None) -> dict[str, int | None] | None:
     """Views/curtidas/comentarios do video. Requer escopo de leitura no token."""
-    token = credentials.get("TIKTOK_ACCESS_TOKEN")
+    token = credentials.get("TIKTOK_ACCESS_TOKEN", channel_id)
     if not (remote_id and token):
         return None
     try:

@@ -10,7 +10,7 @@ que precisa ser alcancavel pela Meta — protegida por HMAC em vez de login.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -202,6 +202,126 @@ async def save_connections(request: Request, csrf: str = Form("")):
     return RedirectResponse("/connections?salvo=1", status_code=303)
 
 
+# --------------------------------------------------------------------------- canais (multi-conta)
+
+
+@app.get("/channels", response_class=HTMLResponse, dependencies=panel)
+def channels_page(request: Request):
+    chans = db.list_channels()
+    for ch in chans:
+        module = REGISTRY.get(ch["platform"])
+        ch["ready"] = module.configured(ch["id"]) if module else False
+    return templates.TemplateResponse(
+        request,
+        "channels.html",
+        {
+            "channels": chans,
+            "platforms": list(REGISTRY.keys()),
+            "csrf": security.csrf_token(request),
+        },
+    )
+
+
+@app.post("/channels", dependencies=panel)
+def add_channel(request: Request, name: str = Form(...), platform: str = Form(...),
+                market: str = Form("BR"), niche: str = Form(""),
+                posts_per_day: int = Form(3), csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    if platform not in REGISTRY:
+        raise HTTPException(400, f"plataforma desconhecida: {platform}")
+    try:
+        channel_id = db.create_channel(name, platform, market, niche or None, posts_per_day)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return RedirectResponse(f"/channels/{channel_id}", status_code=303)
+
+
+@app.post("/channels/{channel_id}/settings", dependencies=panel)
+def update_channel_settings(request: Request, channel_id: int, name: str = Form(...),
+                            niche: str = Form(""), market: str = Form("BR"),
+                            posts_per_day: int = Form(3), csrf: str = Form("")):
+    """Edita nome, segmento (niche), mercado e cadencia de gotejamento do canal."""
+    security.require_csrf(request, csrf)
+    if db.get_channel(channel_id) is None:
+        raise HTTPException(404, "canal nao encontrado")
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "o canal precisa de um nome")
+    db.update_channel(
+        channel_id,
+        name=name,
+        niche=(niche.strip() or None),
+        market=(market.strip() or "BR"),
+        posts_per_day=max(1, int(posts_per_day or 3)),
+    )
+    return RedirectResponse(f"/channels/{channel_id}?salvo=1", status_code=303)
+
+
+@app.get("/channels/{channel_id}", response_class=HTMLResponse, dependencies=panel)
+def channel_detail(request: Request, channel_id: int, salvo: int = 0):
+    channel = db.get_channel(channel_id)
+    if channel is None:
+        raise HTTPException(404, "canal nao encontrado")
+    platform = channel["platform"]
+    keys = credentials.MANAGED.get(platform, [])
+    values = {
+        key: credentials.get(key, channel_id)
+        for key in keys
+        if key not in credentials.SECRET_KEYS
+    }
+    module = REGISTRY.get(platform)
+    return templates.TemplateResponse(
+        request,
+        "channel.html",
+        {
+            "channel": channel,
+            "keys": keys,
+            "secret_keys": credentials.SECRET_KEYS,
+            "shared_keys": credentials.SHARED_KEYS,
+            "status": credentials.status(channel_id).get(platform, {}),
+            "values": values,
+            "ready": module.configured(channel_id) if module else False,
+            "csrf": security.csrf_token(request),
+            "salvo": bool(salvo),
+        },
+    )
+
+
+@app.post("/channels/{channel_id}/credentials", dependencies=panel)
+async def save_channel_credentials(request: Request, channel_id: int, csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    channel = db.get_channel(channel_id)
+    if channel is None:
+        raise HTTPException(404, "canal nao encontrado")
+    form = await request.form()
+    keys = credentials.MANAGED.get(channel["platform"], [])
+    updates = {key: str(form.get(key) or "") for key in keys}
+    credentials.save(updates, channel_id)
+    return RedirectResponse(f"/channels/{channel_id}?salvo=1", status_code=303)
+
+
+@app.post("/channels/{channel_id}/status", dependencies=panel)
+def set_channel_status(request: Request, channel_id: int,
+                       status: str = Form(...), csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    if status not in db.CHANNEL_STATES:
+        raise HTTPException(400, f"status invalido: {status}")
+    if db.get_channel(channel_id) is None:
+        raise HTTPException(404, "canal nao encontrado")
+    db.update_channel(channel_id, status=status)
+    return RedirectResponse("/channels", status_code=303)
+
+
+@app.post("/channels/{channel_id}/delete", dependencies=panel)
+def remove_channel(request: Request, channel_id: int, csrf: str = Form("")):
+    security.require_csrf(request, csrf)
+    if db.get_channel(channel_id) is None:
+        raise HTTPException(404, "canal nao encontrado")
+    db.delete_channel(channel_id)
+    credentials.clear_channel(channel_id)  # apaga o cofre do canal do disco
+    return RedirectResponse("/channels", status_code=303)
+
+
 @app.post("/episodes", dependencies=panel)
 def create_episode(
     request: Request,
@@ -240,6 +360,9 @@ def episode_detail(request: Request, episode_id: int, duplicado: int = 0):
             "clips": db.list_clips(episode_id),
             "posts": db.list_posts(episode_id),
             "publishers": publisher_status(),
+            "channels": db.list_channels(only_active=True),
+            "segments": sorted({(c["niche"] or "").strip()
+                                for c in db.list_channels(only_active=True) if (c["niche"] or "").strip()}),
             "license_states": db.LICENSE_STATES,
             "csrf": security.csrf_token(request),
             "duplicado": bool(duplicado),
@@ -255,6 +378,17 @@ def set_license(request: Request, episode_id: int,
     if license_status not in db.LICENSE_STATES:
         raise HTTPException(400, "licenca invalida")
     db.update_episode(episode_id, license_status=license_status)
+    return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
+
+
+@app.post("/episodes/{episode_id}/segment", dependencies=panel)
+def set_segment(request: Request, episode_id: int,
+                segment: str = Form(""), csrf: str = Form("")):
+    """Override manual do segmento — vence a classificacao automatica na distribuicao."""
+    security.require_csrf(request, csrf)
+    if db.get_episode(episode_id) is None:
+        raise HTTPException(404, "episodio nao encontrado")
+    db.update_episode(episode_id, segment=(segment.strip() or None))
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
 
 
@@ -300,7 +434,8 @@ def request_action(request: Request, episode_id: int,
 @app.post("/clips/{clip_id}/publish", dependencies=panel)
 def schedule_publish(request: Request, clip_id: int, platform: str = Form(...),
                      orientation: str = Form("vertical"),
-                     scheduled_at: str = Form(""), csrf: str = Form("")):
+                     scheduled_at: str = Form(""), channel_id: str = Form(""),
+                     csrf: str = Form("")):
     security.require_csrf(request, csrf)
 
     clip = db.get_clip(clip_id)
@@ -308,6 +443,16 @@ def schedule_publish(request: Request, clip_id: int, platform: str = Form(...),
         raise HTTPException(404, "corte nao encontrado")
     if clip.get("status") != "ready" or not clip.get("path"):
         raise HTTPException(400, "corte ainda nao foi renderizado")
+
+    # Um canal escolhido define a plataforma (e as credenciais). Sem canal, cai no
+    # cofre global — o comportamento de conta unica de antes.
+    chan_id = _channel_arg(channel_id)
+    if chan_id is not None:
+        channel = db.get_channel(chan_id)
+        if channel is None:
+            raise HTTPException(400, "canal nao encontrado")
+        platform = channel["platform"]
+
     if platform not in REGISTRY:
         raise HTTPException(400, f"plataforma desconhecida: {platform}")
     if orientation not in ("vertical", "horizontal"):
@@ -315,8 +460,72 @@ def schedule_publish(request: Request, clip_id: int, platform: str = Form(...),
     if orientation == "horizontal" and not clip.get("path_wide"):
         raise HTTPException(400, "este corte nao tem versao horizontal (16:9) renderizada")
 
-    db.create_post(clip_id, platform, _parse_schedule(scheduled_at), orientation)
+    db.create_post(clip_id, platform, _parse_schedule(scheduled_at), orientation, chan_id)
     return RedirectResponse(f"/episodes/{clip['episode_id']}", status_code=303)
+
+
+@app.post("/clips/{clip_id}/publish_many", dependencies=panel)
+async def publish_many(request: Request, clip_id: int):
+    """Enfileira o mesmo corte em varios canais de uma vez, com espacamento.
+
+    O espacamento (stagger) escalona os horarios de publicacao entre as contas —
+    postar dezenas de contas no mesmo segundo e o padrao classico que dispara os
+    detectores de spam multi-conta.
+
+    Le tudo do form manualmente (channel_ids e multivalorado); por isso o CSRF
+    tambem vem do form, nao de um parametro Form separado.
+    """
+    form = await request.form()
+    security.require_csrf(request, str(form.get("csrf") or ""))
+
+    clip = db.get_clip(clip_id)
+    if clip is None:
+        raise HTTPException(404, "corte nao encontrado")
+    if clip.get("status") != "ready" or not clip.get("path"):
+        raise HTTPException(400, "corte ainda nao foi renderizado")
+
+    raw_ids = form.getlist("channel_ids")
+    orientation = form.get("orientation") or "vertical"
+    if orientation not in ("vertical", "horizontal"):
+        raise HTTPException(400, "orientacao invalida")
+    if orientation == "horizontal" and not clip.get("path_wide"):
+        raise HTTPException(400, "este corte nao tem versao horizontal (16:9) renderizada")
+    try:
+        stagger = max(0, int(form.get("stagger_minutes") or 0))
+    except ValueError:
+        stagger = 0
+
+    base = datetime.now(timezone.utc)
+    created = 0
+    for i, raw in enumerate(raw_ids):
+        chan_id = _channel_arg(raw)
+        if chan_id is None:
+            continue
+        channel = db.get_channel(chan_id)
+        if channel is None or channel["status"] != "active":
+            continue
+        # Escalonado: cada canal seguinte publica `stagger` min depois. Sem stagger,
+        # entra imediato (scheduled_at NULL).
+        sched = None
+        if stagger:
+            sched = (base + timedelta(minutes=stagger * i)).isoformat(timespec="seconds")
+        db.create_post(clip_id, channel["platform"], sched, orientation, chan_id)
+        created += 1
+
+    if created == 0:
+        raise HTTPException(400, "selecione ao menos um canal ativo")
+    return RedirectResponse(f"/episodes/{clip['episode_id']}", status_code=303)
+
+
+def _channel_arg(raw: str) -> int | None:
+    """Converte o campo channel_id do formulario em int, ou None quando vazio."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise HTTPException(400, "channel_id invalido")
 
 
 def _parse_schedule(raw: str) -> str | None:

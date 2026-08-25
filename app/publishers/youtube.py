@@ -42,17 +42,17 @@ TAGS_TOTAL_MAX = 500
 name = "youtube"
 
 
-def configured() -> bool:
+def configured(channel_id: int | None = None) -> bool:
     return bool(
-        credentials.get("YOUTUBE_CLIENT_ID")
-        and credentials.get("YOUTUBE_CLIENT_SECRET")
-        and credentials.get("YOUTUBE_REFRESH_TOKEN")
+        credentials.get("YOUTUBE_CLIENT_ID", channel_id)
+        and credentials.get("YOUTUBE_CLIENT_SECRET", channel_id)
+        and credentials.get("YOUTUBE_REFRESH_TOKEN", channel_id)
     )
 
 
 def publish(video_path: Path, caption: str, title: str | None = None,
-            thumb_path: Path | None = None) -> PublishResult:
-    if not configured():
+            thumb_path: Path | None = None, channel_id: int | None = None) -> PublishResult:
+    if not configured(channel_id):
         return PublishResult(
             False,
             error="YouTube nao configurado (YOUTUBE_CLIENT_ID/SECRET/REFRESH_TOKEN)",
@@ -62,7 +62,7 @@ def publish(video_path: Path, caption: str, title: str | None = None,
     if not video_path.exists():
         return PublishResult(False, error=f"arquivo nao encontrado: {video_path}")
 
-    token = _access_token()
+    token = _access_token(channel_id)
     if token is None:
         return PublishResult(
             False,
@@ -84,7 +84,7 @@ def publish(video_path: Path, caption: str, title: str | None = None,
             "categoryId": settings.youtube_category_id,
         },
         "status": {
-            "privacyStatus": credentials.get("YOUTUBE_PRIVACY") or settings.youtube_privacy,
+            "privacyStatus": credentials.get("YOUTUBE_PRIVACY", channel_id) or settings.youtube_privacy,
             # Sem esta declaracao a API recusa o upload: e obrigatoria desde as
             # regras de conteudo infantil (COPPA). Estes cortes nao sao para criancas.
             "selfDeclaredMadeForKids": False,
@@ -161,11 +161,11 @@ def _set_thumbnail(token: str, video_id: str, thumb_path: Path) -> None:
         log.warning("thumbnail nao aplicada: %s", exc)
 
 
-def stats(remote_id: str) -> dict[str, int | None] | None:
+def stats(remote_id: str, channel_id: int | None = None) -> dict[str, int | None] | None:
     """Views/curtidas/comentarios do video. None se nao der para consultar."""
     if not remote_id:
         return None
-    token = _access_token()
+    token = _access_token(channel_id)
     if token is None:
         return None
     try:
@@ -197,15 +197,15 @@ def _parse_stats(payload: dict) -> dict[str, int | None] | None:
             "comments": _num(s.get("commentCount"))}
 
 
-def _access_token() -> str | None:
+def _access_token(channel_id: int | None = None) -> str | None:
     """Troca o refresh token de longa duracao por um access token de ~1h."""
     try:
         response = requests.post(
             TOKEN_URL,
             data={
-                "client_id": credentials.get("YOUTUBE_CLIENT_ID"),
-                "client_secret": credentials.get("YOUTUBE_CLIENT_SECRET"),
-                "refresh_token": credentials.get("YOUTUBE_REFRESH_TOKEN"),
+                "client_id": credentials.get("YOUTUBE_CLIENT_ID", channel_id),
+                "client_secret": credentials.get("YOUTUBE_CLIENT_SECRET", channel_id),
+                "refresh_token": credentials.get("YOUTUBE_REFRESH_TOKEN", channel_id),
                 "grant_type": "refresh_token",
             },
             timeout=30,

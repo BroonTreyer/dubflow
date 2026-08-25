@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Canais — dubflow{% endblock %}
+{% block content %}
+
+<p class="muted"><a href="/">&larr; voltar</a></p>
+
+<div class="panel">
+  <h2>Contas conectadas ({{ channels | length }})</h2>
+  <p class="muted" style="margin-bottom:14px">
+    Cada canal é uma conta de destino (um canal do YouTube, um perfil do TikTok…),
+    com <strong>credenciais próprias</strong>. Publique o mesmo corte em vários canais
+    de uma vez pela página do episódio. Um canal <em>pausado</em> não recebe novas
+    publicações da fila.
+  </p>
+
+  {% if channels %}
+  <table>
+    <tr><th>Canal</th><th>Plataforma</th><th>Mercado</th><th>Segmento</th><th>Cortes/dia</th><th>Credenciais</th><th>Estado</th><th></th></tr>
+    {% for ch in channels %}
+    <tr>
+      <td><a href="/channels/{{ ch.id }}">{{ ch.name }}</a></td>
+      <td style="text-transform:capitalize">{{ ch.platform }}</td>
+      <td>{{ ch.market }}</td>
+      <td class="muted">{{ ch.niche or '— (sem segmento)' }}</td>
+      <td class="muted">{{ ch.posts_per_day }}</td>
+      <td>
+        <span class="tag {% if ch.ready %}done{% else %}failed{% endif %}">
+          {{ 'conectado' if ch.ready else 'faltam credenciais' }}
+        </span>
+      </td>
+      <td>
+        <span class="tag {% if ch.status == 'active' %}done{% else %}run{% endif %}">{{ ch.status }}</span>
+      </td>
+      <td>
+        <div class="row">
+          <form method="post" action="/channels/{{ ch.id }}/status">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="status" value="{{ 'paused' if ch.status == 'active' else 'active' }}">
+            <button type="submit" class="ghost">{{ 'pausar' if ch.status == 'active' else 'ativar' }}</button>
+          </form>
+          <form method="post" action="/channels/{{ ch.id }}/delete"
+                onsubmit="return confirm('Excluir o canal {{ ch.name }} e apagar suas credenciais?')">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button type="submit" class="ghost" style="color:var(--err)">excluir</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">Nenhum canal ainda. Crie o primeiro abaixo.</p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Novo canal</h2>
+  <form method="post" action="/channels">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row" style="margin-bottom:10px">
+      <input type="text" name="name" placeholder="nome do canal (ex.: Finanças BR #1)" required
+             style="flex:2;min-width:220px">
+      <select name="platform" style="flex:1">
+        {% for p in platforms %}
+        <option value="{{ p }}">{{ p }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <select name="market" title="mercado alvo (afeta idioma/RPM)">
+        <option value="BR">BR</option>
+        <option value="US">US</option>
+        <option value="ES">ES</option>
+        <option value="OUTRO">outro</option>
+      </select>
+      <input type="text" name="niche" placeholder="segmento (ex.: podcast, filmes, notícias)"
+             style="flex:1;min-width:200px"
+             title="os cortes de episódios deste segmento vêm para este canal">
+      <label class="muted">cortes/dia
+        <input type="number" name="posts_per_day" value="3" min="1" max="50" style="max-width:80px">
+      </label>
+    </div>
+    <button type="submit">Criar canal</button>
+  </form>
+  <p class="muted" style="margin-top:12px;margin-bottom:0">
+    O <strong>segmento</strong> é o que liga o canal aos cortes: um episódio classificado
+    como "podcast" só vai para canais de segmento "podcast". Depois de criar, abra o canal
+    para colar as credenciais daquela conta.
+  </p>
+</div>
+
+{% endblock %}

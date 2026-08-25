@@ -27,11 +27,13 @@ GRAPH = "https://graph.facebook.com/v21.0"
 name = "instagram"
 
 
-def configured() -> bool:
-    return bool(credentials.get("IG_USER_ID") and credentials.get("IG_ACCESS_TOKEN") and credentials.get("PUBLIC_BASE_URL"))
+def configured(channel_id: int | None = None) -> bool:
+    return bool(credentials.get("IG_USER_ID", channel_id)
+                and credentials.get("IG_ACCESS_TOKEN", channel_id)
+                and credentials.get("PUBLIC_BASE_URL", channel_id))
 
 
-def public_url_for(video_path: Path) -> str:
+def public_url_for(video_path: Path, channel_id: int | None = None) -> str:
     """URL assinada do arquivo, servida por /media do proprio app.
 
     A assinatura HMAC deixa a URL alcancavel pela Meta (que nao faz login) sem
@@ -39,23 +41,26 @@ def public_url_for(video_path: Path) -> str:
     nome do arquivo nao e enumeravel.
     """
     name = video_path.name
-    return f"{credentials.get("PUBLIC_BASE_URL").rstrip('/')}/media/{media_signature(name)}/{name}"
+    base = credentials.get("PUBLIC_BASE_URL", channel_id).rstrip('/')
+    return f"{base}/media/{media_signature(name)}/{name}"
 
 
 def publish(video_path: Path, caption: str, title: str | None = None,
-            thumb_path: Path | None = None) -> PublishResult:
-    if not configured():
+            thumb_path: Path | None = None, channel_id: int | None = None) -> PublishResult:
+    if not configured(channel_id):
         return PublishResult(False, error="Instagram nao configurado (IG_USER_ID/TOKEN/PUBLIC_BASE_URL)")
 
+    ig_user = credentials.get("IG_USER_ID", channel_id)
+    token = credentials.get("IG_ACCESS_TOKEN", channel_id)
     try:
         container = requests.post(
-            f"{GRAPH}/{credentials.get("IG_USER_ID")}/media",
+            f"{GRAPH}/{ig_user}/media",
             data={
                 "media_type": "REELS",
-                "video_url": public_url_for(video_path),
+                "video_url": public_url_for(video_path, channel_id),
                 "caption": caption[:2200],
                 "share_to_feed": "true",
-                "access_token": credentials.get("IG_ACCESS_TOKEN"),
+                "access_token": token,
             },
             timeout=60,
         )
@@ -66,29 +71,29 @@ def publish(video_path: Path, caption: str, title: str | None = None,
 
         # O Instagram processa o video de forma assincrona; publicar antes de
         # FINISHED devolve erro.
-        status = _wait_ready(creation_id)
+        status = _wait_ready(creation_id, channel_id=channel_id)
         if status != "FINISHED":
             return PublishResult(False, error=f"processamento terminou como {status}")
 
         published = requests.post(
-            f"{GRAPH}/{credentials.get("IG_USER_ID")}/media_publish",
-            data={"creation_id": creation_id, "access_token": credentials.get("IG_ACCESS_TOKEN")},
+            f"{GRAPH}/{ig_user}/media_publish",
+            data={"creation_id": creation_id, "access_token": token},
             timeout=60,
         ).json()
         if "id" not in published:
             return PublishResult(False, error=f"publicacao falhou: {published}")
 
         media_id = published["id"]
-        permalink = _permalink(media_id)
+        permalink = _permalink(media_id, channel_id)
         return PublishResult(True, remote_id=media_id, permalink=permalink)
 
     except requests.RequestException as exc:
         return PublishResult(False, error=f"erro de rede: {exc}")
 
 
-def stats(remote_id: str) -> dict[str, int | None] | None:
+def stats(remote_id: str, channel_id: int | None = None) -> dict[str, int | None] | None:
     """Curtidas e comentarios do Reels. None se nao der para consultar."""
-    token = credentials.get("IG_ACCESS_TOKEN")
+    token = credentials.get("IG_ACCESS_TOKEN", channel_id)
     if not (remote_id and token):
         return None
     try:
@@ -105,13 +110,15 @@ def stats(remote_id: str) -> dict[str, int | None] | None:
     return {"views": None, "likes": body.get("like_count"), "comments": body.get("comments_count")}
 
 
-def _wait_ready(creation_id: str, timeout_seconds: int = 900, interval: int = 10) -> str:
+def _wait_ready(creation_id: str, timeout_seconds: int = 900, interval: int = 10,
+                channel_id: int | None = None) -> str:
     deadline = time.time() + timeout_seconds
     status = "IN_PROGRESS"
     while time.time() < deadline:
         response = requests.get(
             f"{GRAPH}/{creation_id}",
-            params={"fields": "status_code", "access_token": credentials.get("IG_ACCESS_TOKEN")},
+            params={"fields": "status_code",
+                    "access_token": credentials.get("IG_ACCESS_TOKEN", channel_id)},
             timeout=30,
         ).json()
         status = response.get("status_code", "UNKNOWN")
@@ -149,11 +156,12 @@ def _explain(body: dict) -> str:
     return f"criacao do container falhou: {message or body}"
 
 
-def _permalink(media_id: str) -> str | None:
+def _permalink(media_id: str, channel_id: int | None = None) -> str | None:
     try:
         response = requests.get(
             f"{GRAPH}/{media_id}",
-            params={"fields": "permalink", "access_token": credentials.get("IG_ACCESS_TOKEN")},
+            params={"fields": "permalink",
+                    "access_token": credentials.get("IG_ACCESS_TOKEN", channel_id)},
             timeout=30,
         ).json()
         return response.get("permalink")

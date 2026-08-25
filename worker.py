@@ -91,10 +91,12 @@ def run_publish_queue() -> bool:
     else:
         thumb = post.get("clip_thumb_vertical") or post.get("clip_thumb")
     thumb_path = Path(thumb) if thumb else None
-    log.info("publicando post %s em %s/%s (tentativa %d)",
-             post["id"], platform, orientation, attempts)
+    channel_id = post.get("channel_id")
+    log.info("publicando post %s em %s/%s%s (tentativa %d)",
+             post["id"], platform, orientation,
+             f" [canal {channel_id}]" if channel_id else "", attempts)
 
-    result = publishers.publish(platform, Path(clip_path), caption, title, thumb_path)
+    result = publishers.publish(platform, Path(clip_path), caption, title, thumb_path, channel_id)
     if result.ok:
         db.update_post(
             post["id"],
@@ -189,7 +191,7 @@ def run_stats_refresh() -> bool:
         return False
     for post in posts:
         try:
-            data = publishers.stats_for(post["platform"], post["remote_id"])
+            data = publishers.stats_for(post["platform"], post["remote_id"], post.get("channel_id"))
         except Exception as exc:  # noqa: BLE001 — metrica e extra; nunca derruba o loop
             log.warning("stats do post %s falharam: %s", post["id"], exc)
             continue

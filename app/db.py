@@ -33,14 +33,14 @@ LICENSE_STATES = ("unknown", "licensed", "owned", "public_domain")
 # que impede uma chave inesperada de virar SQL.
 EPISODE_COLUMNS = {
     "source_url", "video_id", "title", "channel", "duration", "lang_src", "lang_dst",
-    "license_status", "status", "progress", "error", "paths", "meta", "updated_at",
-    "pending_action", "started_at",
+    "segment", "license_status", "status", "progress", "error", "paths", "meta",
+    "updated_at", "pending_action", "started_at",
 }
 
 # Acoes pedidas pelo painel sobre um episodio ja concluido, executadas pelo
 # worker: queimar a legenda no video inteiro, ou refazer os cortes (util depois
 # de mudar o estilo da legenda).
-ACTIONS = ("burn", "rerender_clips")
+ACTIONS = ("burn", "rerender_clips", "distribute")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
                 "yt_description", "score", "path", "path_wide", "thumb_path",
                 "thumb_vertical_path", "thumb_text", "status"}
@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     duration        REAL,
     lang_src        TEXT,
     lang_dst        TEXT,
+    -- Segmento (nicho) do conteudo, para rotear os cortes ao canal certo.
+    -- Classificado automaticamente; editavel no painel. NULL = ainda nao definido.
+    segment         TEXT,
     license_status  TEXT NOT NULL DEFAULT 'unknown',
     status          TEXT NOT NULL DEFAULT 'queued',
     progress        REAL NOT NULL DEFAULT 0,
@@ -99,9 +102,27 @@ CREATE TABLE IF NOT EXISTS clips (
     created_at     TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS channels (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,          -- rotulo humano ("Financas BR #1")
+    platform    TEXT NOT NULL,          -- youtube|instagram|tiktok|telegram
+    market      TEXT NOT NULL DEFAULT 'BR',   -- BR|US|... (afeta idioma/RPM alvo)
+    niche       TEXT,                   -- segmento que o canal atende (roteia os cortes)
+    -- Ritmo do gotejamento: quantos cortes por dia este canal recebe no agendamento
+    -- automatico. Conta nova posta pouco; conta aquecida pode subir.
+    posts_per_day INTEGER NOT NULL DEFAULT 3,
+    status      TEXT NOT NULL DEFAULT 'active',  -- active|paused
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS posts (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     clip_id      INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    -- Conta de destino. NULL = credenciais globais (comportamento anterior a
+    -- multi-conta). ON DELETE SET NULL preserva o historico do post se o canal
+    -- for removido.
+    channel_id   INTEGER REFERENCES channels(id) ON DELETE SET NULL,
     platform     TEXT NOT NULL,
     orientation  TEXT NOT NULL DEFAULT 'vertical',
     status       TEXT NOT NULL DEFAULT 'pending',
@@ -141,7 +162,14 @@ CREATE INDEX IF NOT EXISTS idx_clips_episode ON clips(episode_id);
 CREATE INDEX IF NOT EXISTS idx_posts_clip ON posts(clip_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_channels_status ON channels(status);
 """
+# idx_posts_channel NAO fica no SCHEMA: em banco antigo a coluna posts.channel_id
+# so existe depois do ALTER de migracao, que roda apos o executescript(SCHEMA).
+# Criado em init_db logo apos garantir a coluna.
+
+CHANNEL_STATES = ("active", "paused")
+CHANNEL_COLUMNS = {"name", "platform", "market", "niche", "status", "posts_per_day"}
 
 
 def now() -> str:
@@ -213,6 +241,16 @@ def init_db() -> None:
             conn.execute("ALTER TABLE episodes ADD COLUMN pending_action TEXT")
         if "started_at" not in ep_columns:
             conn.execute("ALTER TABLE episodes ADD COLUMN started_at TEXT")
+        if "segment" not in ep_columns:
+            conn.execute("ALTER TABLE episodes ADD COLUMN segment TEXT")
+
+        # Multi-conta: cadencia de gotejamento por canal (bancos que ja tinham a
+        # tabela channels sem a coluna).
+        ch_columns = {r["name"] for r in conn.execute("PRAGMA table_info(channels)")}
+        if "posts_per_day" not in ch_columns:
+            conn.execute(
+                "ALTER TABLE channels ADD COLUMN posts_per_day INTEGER NOT NULL DEFAULT 3"
+            )
 
         # Migracoes das colunas de corte horizontal, thumbnail e orientacao do post.
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
@@ -234,6 +272,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE posts ADD COLUMN orientation TEXT NOT NULL DEFAULT 'vertical'"
             )
+        # Multi-conta: bancos antigos ganham channel_id nulavel (NULL = cofre global).
+        if "channel_id" not in post_columns:
+            conn.execute("ALTER TABLE posts ADD COLUMN channel_id INTEGER REFERENCES channels(id)")
+        # Indice criado aqui (nao no SCHEMA) porque a coluna pode ter acabado de nascer.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_channel ON posts(channel_id)")
 
         order_columns = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
         if "attempts" not in order_columns:
@@ -459,12 +502,12 @@ def get_clip(clip_id: int) -> dict[str, Any] | None:
 
 
 def create_post(clip_id: int, platform: str, scheduled_at: str | None = None,
-                orientation: str = "vertical") -> int:
+                orientation: str = "vertical", channel_id: int | None = None) -> int:
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO posts (clip_id, platform, orientation, scheduled_at, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (clip_id, platform, orientation, scheduled_at, now()),
+            "INSERT INTO posts (clip_id, platform, orientation, scheduled_at, channel_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (clip_id, platform, orientation, scheduled_at, channel_id, now()),
         )
         return int(cur.lastrowid)
 
@@ -490,7 +533,9 @@ def pending_posts() -> list[dict[str, Any]]:
             " c.title AS clip_title, c.yt_title AS clip_yt_title,"
             " c.yt_description AS clip_yt_description, c.episode_id"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " LEFT JOIN channels ch ON ch.id = p.channel_id"
             " WHERE p.status = 'pending'"
+            "   AND (p.channel_id IS NULL OR ch.status = 'active')"
             "   AND p.attempts < ?"
             "   AND (p.scheduled_at IS NULL OR p.scheduled_at <= ?)"
             " ORDER BY p.id",
@@ -502,7 +547,9 @@ def pending_posts() -> list[dict[str, Any]]:
 def list_posts(episode_id: int) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT p.*, c.idx AS clip_idx FROM posts p JOIN clips c ON c.id = p.clip_id"
+            "SELECT p.*, c.idx AS clip_idx, ch.name AS channel_name"
+            " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " LEFT JOIN channels ch ON ch.id = p.channel_id"
             " WHERE c.episode_id = ? ORDER BY p.id",
             (episode_id,),
         ).fetchall()
@@ -513,7 +560,7 @@ def posts_needing_stats(limit: int = 10) -> list[dict[str, Any]]:
     """Publicacoes com id remoto, priorizando as nunca atualizadas / mais antigas."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, platform, remote_id FROM posts"
+            "SELECT id, platform, remote_id, channel_id FROM posts"
             " WHERE status = 'published' AND remote_id IS NOT NULL"
             " ORDER BY (stats_at IS NULL) DESC, stats_at ASC LIMIT ?",
             (limit,),
@@ -534,6 +581,41 @@ def analytics_posts(limit: int = 200) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------- distribuicao automatica
+
+
+def clips_ready_without_posts(episode_id: int) -> list[dict[str, Any]]:
+    """Cortes prontos deste episodio que ainda nao tem NENHUMA publicacao.
+
+    Base do agendamento automatico: garante que rodar a distribuicao de novo nao
+    duplica posts — so agenda o que ainda nao foi agendado.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT c.* FROM clips c LEFT JOIN posts p ON p.clip_id = c.id"
+            " WHERE c.episode_id = ? AND c.status = 'ready' AND p.id IS NULL"
+            " ORDER BY c.idx",
+            (episode_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def channel_scheduling_horizon(channel_id: int) -> str | None:
+    """Ultimo horario ja agendado/publicado para este canal (ISO), ou None.
+
+    O gotejamento novo continua DEPOIS deste horario, para nao empilhar posts no
+    mesmo instante do que ja estava na fila do canal.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT MAX(scheduled_at) AS h FROM posts"
+            " WHERE channel_id = ? AND scheduled_at IS NOT NULL"
+            "   AND status IN ('pending', 'publishing', 'published')",
+            (channel_id,),
+        ).fetchone()
+    return row["h"] if row and row["h"] else None
 
 
 # --------------------------------------------------------------------------- orders (vendas)
@@ -613,3 +695,71 @@ def set_subscription_expiry(buyer_tg_id: str, expires_at: str) -> None:
             "   updated_at = excluded.updated_at",
             (str(buyer_tg_id), expires_at, ts),
         )
+
+
+# --------------------------------------------------------------------------- channels (contas)
+
+
+def create_channel(name: str, platform: str, market: str = "BR",
+                   niche: str | None = None, posts_per_day: int = 3) -> int:
+    """Registra uma conta de destino (um canal do YouTube, um perfil do TikTok...).
+
+    Cada canal tem seu proprio cofre de credenciais (ver app/credentials.py); e a
+    unidade que permite publicar em varias contas a partir do mesmo acervo.
+    """
+    if platform not in ("youtube", "instagram", "tiktok", "telegram"):
+        raise ValueError(f"plataforma invalida: {platform}")
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("o canal precisa de um nome")
+    ts = now()
+    with connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO channels (name, platform, market, niche, posts_per_day,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, platform, (market or "BR").strip() or "BR",
+             (niche or "").strip() or None, max(1, int(posts_per_day or 3)), ts, ts),
+        )
+        return int(cur.lastrowid)
+
+
+def get_channel(channel_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_channels(platform: str | None = None, only_active: bool = False) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if platform:
+        clauses.append("platform = ?")
+        params.append(platform)
+    if only_active:
+        clauses.append("status = 'active'")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM channels{where} ORDER BY platform, name", params
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_channel(channel_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    _guard(fields, CHANNEL_COLUMNS, "channels")
+    if "status" in fields and fields["status"] not in CHANNEL_STATES:
+        raise ValueError(f"status de canal invalido: {fields['status']}")
+    fields["updated_at"] = now()
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE channels SET {assignments} WHERE id = ?", (*fields.values(), channel_id)
+        )
+
+
+def delete_channel(channel_id: int) -> None:
+    """Remove o canal. Os posts ja publicados por ele mantêm o historico
+    (channel_id vira NULL via ON DELETE SET NULL)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))

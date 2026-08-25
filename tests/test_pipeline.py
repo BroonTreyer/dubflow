@@ -712,12 +712,12 @@ def test_youtube_metadata() -> None:
     # antes ele so passava enquanto ninguem tivesse conectado o YouTube de verdade.
     original = youtube.credentials.get
     try:
-        youtube.credentials.get = lambda key: ""
+        youtube.credentials.get = lambda key, channel_id=None: ""
         check("nao configurado sem credenciais", youtube.configured() is False)
-        youtube.credentials.get = lambda key: "" if key == "YOUTUBE_REFRESH_TOKEN" else "x"
+        youtube.credentials.get = lambda key, channel_id=None: "" if key == "YOUTUBE_REFRESH_TOKEN" else "x"
         check("faltando so o refresh token ainda e nao configurado",
               youtube.configured() is False)
-        youtube.credentials.get = lambda key: "x"
+        youtube.credentials.get = lambda key, channel_id=None: "x"
         check("configurado com o cofre completo", youtube.configured() is True)
     finally:
         youtube.credentials.get = original

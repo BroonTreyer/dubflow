@@ -14,8 +14,8 @@ from typing import Any
 
 from app import db
 from app.config import settings
-from app.pipeline import (archive, clips, ingest, subtitles, thumbnail, transcribe,
-                          translate)
+from app.pipeline import (archive, clips, distribute, ingest, subtitles, thumbnail,
+                          transcribe, translate)
 
 log = logging.getLogger(__name__)
 
@@ -212,6 +212,17 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         )
         paths["archive_dir"] = str(archived)
 
+        # ---------------------------------------------------- 7. distribuicao
+        # Best-effort: classifica o episodio e agenda os cortes nos canais do
+        # segmento. Uma falha aqui (API, canal mal configurado) nao reprova o
+        # episodio — os cortes ja existem e da para distribuir na mao depois.
+        if settings.auto_distribute:
+            try:
+                resumo = distribute.distribute_episode(episode_id)
+                log.info("[ep %s] distribuicao automatica: %s", episode_id, resumo)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[ep %s] distribuicao automatica falhou: %s", episode_id, exc)
+
         paths = _cleanup(work_dir, paths)
         _set(episode_id, "done", 1.0, paths=paths, error=None)
         return db.get_episode(episode_id)
@@ -313,6 +324,9 @@ def run_action(episode_id: int, action: str) -> None:
             burn_episode(episode_id)
         elif action == "rerender_clips":
             rerender_clips(episode_id)
+        elif action == "distribute":
+            resumo = distribute.distribute_episode(episode_id)
+            log.info("[ep %s] distribuicao sob demanda: %s", episode_id, resumo)
         else:
             raise ValueError(f"acao desconhecida: {action}")
     except Exception as exc:  # noqa: BLE001 — a acao falha, o episodio continua valido

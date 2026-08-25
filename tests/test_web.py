@@ -366,6 +366,157 @@ def main() -> int:
         ok2 = False
     check("coluna valida continua funcionando", ok2)
 
+    print("multi-conta: modelo e credenciais por canal")
+    c_yt = db.create_channel("Financas BR #1", "youtube", "BR", "financas")
+    c_tk = db.create_channel("Curiosidades US", "tiktok", "US")
+    check("canal criado com os campos", db.get_channel(c_yt)["name"] == "Financas BR #1"
+          and db.get_channel(c_yt)["market"] == "BR")
+    check("lista canais", len(db.list_channels()) >= 2)
+    check("filtra por plataforma",
+          all(c["platform"] == "youtube" for c in db.list_channels(platform="youtube")))
+    # Credencial salva no canal fica isolada.
+    credentials.save({"TIKTOK_ACCESS_TOKEN": "tok-do-canal"}, channel_id=c_tk)
+    check("cred do canal salva e lida", credentials.get("TIKTOK_ACCESS_TOKEN", c_tk) == "tok-do-canal")
+    # Segredo de identidade NAO herda do cofre global (senao publicaria na conta errada).
+    credentials.save({"YOUTUBE_REFRESH_TOKEN": "GLOBAL-RT"})
+    check("identidade nao herda do global", credentials.get("YOUTUBE_REFRESH_TOKEN", c_yt) == "")
+    check("cofre global continua valendo sem channel", credentials.get("YOUTUBE_REFRESH_TOKEN") == "GLOBAL-RT")
+    # Chave compartilhada (infra) herda do global quando o canal nao a define.
+    credentials.save({"PUBLIC_BASE_URL": "https://srv.test"})
+    check("chave compartilhada herda do global", credentials.get("PUBLIC_BASE_URL", c_yt) == "https://srv.test")
+    # configured() por canal
+    from app.publishers import tiktok as tk_mod
+    check("tiktok configurado no canal com token", tk_mod.configured(c_tk) is True)
+    check("tiktok nao configurado em canal sem token", tk_mod.configured(c_yt) is False)
+
+    print("multi-conta: rotas do painel")
+    check("channels exige sessao",
+          anon.get("/channels", follow_redirects=False).status_code in (303, 401))
+    check("GET channels autenticado", client.get("/channels").status_code == 200)
+    r = client.post("/channels", data={"name": "Canal Painel", "platform": "youtube",
+                                       "market": "BR", "csrf": token}, follow_redirects=False)
+    check("cria canal via painel", r.status_code == 303, r.status_code)
+    novo = [c for c in db.list_channels() if c["name"] == "Canal Painel"][0]
+    check("GET detalhe do canal", client.get(f"/channels/{novo['id']}").status_code == 200)
+    r = client.post(f"/channels/{novo['id']}/credentials",
+                    data={"YOUTUBE_CLIENT_ID": "cid-do-canal", "csrf": token}, follow_redirects=False)
+    check("salva cred do canal pelo painel",
+          r.status_code == 303 and credentials.get("YOUTUBE_CLIENT_ID", novo["id"]) == "cid-do-canal")
+    r = client.post(f"/channels/{novo['id']}/status",
+                    data={"status": "paused", "csrf": token}, follow_redirects=False)
+    check("pausa canal", db.get_channel(novo["id"])["status"] == "paused")
+    r = client.post(f"/channels/{novo['id']}/delete", data={"csrf": token}, follow_redirects=False)
+    check("exclui canal", db.get_channel(novo["id"]) is None)
+
+    print("multi-conta: publicacao por canal + fan-out")
+    r = client.post(f"/clips/{cids[0]}/publish",
+                    data={"platform": "telegram", "channel_id": c_tk, "csrf": token},
+                    follow_redirects=False)
+    check("publish em canal aceito", r.status_code == 303, r.status_code)
+    alvo = [p for p in db.list_posts(ep_id) if p.get("channel_id") == c_tk]
+    check("post gravou channel_id", bool(alvo))
+    check("plataforma veio do canal (nao do form)", alvo and alvo[0]["platform"] == "tiktok")
+    check("nome do canal no post", alvo and alvo[0]["channel_name"] == "Curiosidades US")
+    before = len(db.list_posts(ep_id))
+    r = client.post(f"/clips/{cids[0]}/publish_many",
+                    data={"channel_ids": [str(c_yt), str(c_tk)], "orientation": "vertical",
+                          "stagger_minutes": "10", "csrf": token}, follow_redirects=False)
+    check("fan-out aceito", r.status_code == 303, r.status_code)
+    depois = db.list_posts(ep_id)
+    check("fan-out criou um post por canal", len(depois) - before == 2, len(depois) - before)
+    check("stagger agenda contas seguintes",
+          any(p.get("scheduled_at") for p in depois if p.get("channel_id") in (c_yt, c_tk)))
+    r = client.post(f"/clips/{cids[0]}/publish_many",
+                    data={"orientation": "vertical", "csrf": token}, follow_redirects=False)
+    check("fan-out sem canal e recusado", r.status_code == 400, r.status_code)
+
+    print("multi-conta: canal pausado sai da fila")
+    db.update_channel(c_yt, status="paused")
+    check("post de canal pausado some da fila",
+          all(p.get("channel_id") != c_yt for p in db.pending_posts()))
+    db.update_channel(c_yt, status="active")
+    check("reativar traz o post de volta",
+          any(p.get("channel_id") == c_yt for p in db.pending_posts()))
+
+    print("distribuicao: funcoes puras (agendamento e rodizio)")
+    from collections import Counter
+    from datetime import datetime, timezone
+
+    from app.pipeline import distribute
+    rr = distribute.assign_round_robin([1, 2, 3, 4, 5], [100, 200])
+    check("rodizio nao duplica corte", sorted(sum(rr.values(), [])) == [1, 2, 3, 4, 5])
+    check("rodizio distribui 3/2", len(rr[100]) == 3 and len(rr[200]) == 2, rr)
+    agora = datetime(2030, 1, 1, 0, 0, tzinfo=timezone.utc)
+    plano = distribute.plan_schedule({10: [1, 2, 3, 4, 5]}, {10: None}, {10: 2}, agora)
+    tempos = [datetime.fromisoformat(t) for _, _, t in plano]
+    check("agenda todos os cortes", len(plano) == 5)
+    check("nenhum no passado", all(t > agora for t in tempos))
+    check("horarios crescentes", tempos == sorted(tempos))
+    check("2/dia estica 5 cortes em 3 dias", len({t.date() for t in tempos}) == 3,
+          sorted({t.date() for t in tempos}))
+    futuro = datetime(2030, 6, 1, 12, 0, tzinfo=timezone.utc)
+    plano2 = distribute.plan_schedule({10: [1]}, {10: futuro.isoformat()}, {10: 2}, agora)
+    check("respeita o horizonte ja agendado do canal",
+          datetime.fromisoformat(plano2[0][2]) > futuro, plano2)
+
+    print("distribuicao: roteamento fim-a-fim (classificador stub)")
+    ch_pod1 = db.create_channel("Pod BR 1", "youtube", "BR", "podcast", posts_per_day=2)
+    ch_pod2 = db.create_channel("Pod TT", "tiktok", "BR", "podcast", posts_per_day=2)
+    ch_film = db.create_channel("Filmes BR", "youtube", "BR", "filmes")
+    ep_d = db.create_episode("https://youtu.be/dist", "owned")
+    cids_d = db.replace_clips(ep_d, [{"start": 0, "end": 30, "title": f"c{i}",
+                                      "caption": "x", "score": 9} for i in range(5)])
+    for cid in cids_d:
+        db.update_clip(cid, path=str(_tmp / "f.mp4"), status="ready")
+    res = distribute.distribute_episode(ep_d, classifier=lambda e, n: "podcast")
+    check("distribuicao ok", res["status"] == "ok" and res["scheduled"] == 5, res)
+    posts_d = db.list_posts(ep_d)
+    check("um post por corte", len(posts_d) == 5, len(posts_d))
+    por_corte = Counter(p["clip_id"] for p in posts_d)
+    check("cada corte em 1 canal (sem duplicata)",
+          len(por_corte) == 5 and all(v == 1 for v in por_corte.values()))
+    check("so canais do segmento podcast",
+          all(p["channel_id"] in (ch_pod1, ch_pod2) for p in posts_d))
+    check("nada foi para o canal de filmes",
+          all(p["channel_id"] != ch_film for p in posts_d))
+    check("rodizio usou os dois canais do segmento",
+          {p["channel_id"] for p in posts_d} == {ch_pod1, ch_pod2})
+    check("plataforma do post veio do canal",
+          all(p["platform"] in ("youtube", "tiktok") for p in posts_d))
+    check("segmento gravado no episodio", db.get_episode(ep_d)["segment"] == "podcast")
+    check("cortes agendados (scheduled_at)", all(p.get("scheduled_at") for p in posts_d))
+    res_again = distribute.distribute_episode(ep_d, classifier=lambda e, n: "podcast")
+    check("rerun nao duplica posts",
+          res_again["scheduled"] == 0 and len(db.list_posts(ep_d)) == 5, res_again)
+
+    ch_news = db.create_channel("News BR", "youtube", "BR", "Notícias")
+    ep_n = db.create_episode("https://youtu.be/news", "owned")
+    cn = db.replace_clips(ep_n, [{"start": 0, "end": 30, "title": "a", "caption": "x", "score": 9}])
+    db.update_clip(cn[0], path=str(_tmp / "f.mp4"), status="ready")
+    res_n = distribute.distribute_episode(ep_n, classifier=lambda e, n: "noticias")
+    pn = db.list_posts(ep_n)
+    check("roteamento robusto a acento (noticias ~ Notícias)",
+          res_n["status"] == "ok" and pn and pn[0]["channel_id"] == ch_news, res_n)
+
+    print("distribuicao: override e fallback seguro")
+    ep_e = db.create_episode("https://youtu.be/override", "owned")
+    ce = db.replace_clips(ep_e, [{"start": 0, "end": 30, "title": "a", "caption": "x", "score": 9}])
+    db.update_clip(ce[0], path=str(_tmp / "f.mp4"), status="ready")
+    db.update_episode(ep_e, segment="filmes")
+    res_ov = distribute.distribute_episode(ep_e, classifier=lambda e, n: "podcast")
+    pe = db.list_posts(ep_e)
+    check("override de segmento vence a classificacao",
+          res_ov["status"] == "ok" and pe and pe[0]["channel_id"] == ch_film, res_ov)
+    ep_f = db.create_episode("https://youtu.be/none", "owned")
+    cf = db.replace_clips(ep_f, [{"start": 0, "end": 30, "title": "a", "caption": "x", "score": 9}])
+    db.update_clip(cf[0], path=str(_tmp / "f.mp4"), status="ready")
+    res_nc = distribute.distribute_episode(ep_f, classifier=lambda e, n: None)
+    check("baixa confianca nao agenda (fica manual)",
+          res_nc["status"] == "nao_classificado" and not db.list_posts(ep_f), res_nc)
+    res_sc = distribute.distribute_episode(ep_f, classifier=lambda e, n: "viagens")
+    check("segmento sem canal nao agenda",
+          res_sc["status"] == "sem_canal_para_segmento" and not db.list_posts(ep_f), res_sc)
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")

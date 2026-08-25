@@ -31,24 +31,26 @@ SELLABLE_LICENSES = {"licensed", "owned", "public_domain"}
 name = "telegram"
 
 
-def configured() -> bool:
-    return bool(credentials.get("TELEGRAM_BOT_TOKEN") and credentials.get("TELEGRAM_CHANNEL_ID"))
+def configured(channel_id: int | None = None) -> bool:
+    return bool(credentials.get("TELEGRAM_BOT_TOKEN", channel_id)
+                and credentials.get("TELEGRAM_CHANNEL_ID", channel_id))
 
 
-def _url(method: str) -> str:
-    return f"{API}/bot{credentials.get("TELEGRAM_BOT_TOKEN")}/{method}"
+def _url(method: str, channel_id: int | None = None) -> str:
+    return f"{API}/bot{credentials.get("TELEGRAM_BOT_TOKEN", channel_id)}/{method}"
 
 
-def send_clip(video_path: Path, caption: str, chat_id: str | None = None) -> PublishResult:
+def send_clip(video_path: Path, caption: str, chat_id: str | None = None,
+              channel_id: int | None = None) -> PublishResult:
     """Envia um corte para o canal de divulgacao."""
-    if not configured():
+    if not configured(channel_id):
         return PublishResult(False, error="Telegram nao configurado")
 
-    target = chat_id or credentials.get("TELEGRAM_CHANNEL_ID")
+    target = chat_id or credentials.get("TELEGRAM_CHANNEL_ID", channel_id)
     try:
         with Path(video_path).open("rb") as fh:
             response = requests.post(
-                _url("sendVideo"),
+                _url("sendVideo", channel_id),
                 data={
                     "chat_id": target,
                     "caption": caption[:1024],
@@ -134,6 +136,6 @@ def deliver_episode(meta: dict[str, Any], chat_id: str) -> PublishResult:
 
 
 def publish(video_path: Path, caption: str, title: str | None = None,
-            thumb_path: Path | None = None) -> PublishResult:
+            thumb_path: Path | None = None, channel_id: int | None = None) -> PublishResult:
     """Interface uniforme com os demais publishers."""
-    return send_clip(video_path, caption)
+    return send_clip(video_path, caption, channel_id=channel_id)

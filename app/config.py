@@ -92,6 +92,20 @@ class Settings:
     # se voce pedir (mantê-lo permite re-render de cortes sem baixar de novo).
     delete_source_after_archive: bool = _bool("DELETE_SOURCE_AFTER_ARCHIVE", False)
 
+    # --- distribuicao automatica (roteia cortes -> canal do segmento + gotejamento) ---
+    # Liga o passo automatico no fim do pipeline. Sem canais configurados ele nao
+    # faz nada, entao e seguro deixar ligado por padrao.
+    auto_distribute: bool = _bool("AUTO_DISTRIBUTE", True)
+    # Cortes por dia por canal no agendamento (padrao; cada canal pode sobrescrever).
+    distribute_per_day: int = _int("DISTRIBUTE_PER_DAY", 3)
+    # Janela de postagem do dia, em HORA UTC (BR = UTC-3): os slots do dia sao
+    # distribuidos entre start e end.
+    distribute_start_hour: int = _int("DISTRIBUTE_START_HOUR", 9)
+    distribute_end_hour: int = _int("DISTRIBUTE_END_HOUR", 21)
+    # Confianca minima da classificacao para rotear sozinho; abaixo disso, fica
+    # nao-atribuido esperando decisao manual (nunca chuta o canal).
+    distribute_min_confidence: float = _float("DISTRIBUTE_MIN_CONFIDENCE", 0.6)
+
     # --- publicacao ---
     ig_user_id: str = os.getenv("IG_USER_ID", "")
     ig_access_token: str = os.getenv("IG_ACCESS_TOKEN", "")

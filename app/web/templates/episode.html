@@ -115,6 +115,44 @@
   </form>
 </div>
 
+{% if episode.status in ['done', 'failed'] %}
+<div class="panel">
+  <h2>Distribuição automática</h2>
+  <p class="muted" style="margin-bottom:10px">
+    Segmento do episódio (define para quais canais os cortes vão). Deixe o sistema
+    classificar, ou defina na mão — o override vence a classificação.
+  </p>
+  <form method="post" action="/episodes/{{ episode.id }}/segment" class="row" style="margin-bottom:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="text" name="segment" value="{{ episode.segment or '' }}" list="segmentos"
+           placeholder="{{ 'não classificado ainda' }}" style="flex:1;min-width:220px">
+    <datalist id="segmentos">
+      {% for s in segments %}<option value="{{ s }}">{% endfor %}
+    </datalist>
+    <button type="submit" class="ghost">Salvar segmento</button>
+  </form>
+
+  {% if episode.pending_action == 'distribute' %}
+  <div class="note">Na fila: distribuindo os cortes pelos canais. O worker começa em segundos.</div>
+  {% elif not episode.pending_action %}
+  <form method="post" action="/episodes/{{ episode.id }}/action" class="row">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="action" value="distribute">
+    <button type="submit">Distribuir cortes agora</button>
+    <span class="muted">
+      classifica (se preciso), roteia 1 corte = 1 canal do segmento, e agenda em gotejamento.
+    </span>
+  </form>
+  {% endif %}
+  {% if not segments %}
+  <p class="muted" style="margin-top:10px">
+    Você ainda não tem canais com segmento definido — crie canais em
+    <a href="/channels">canais</a> primeiro.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="panel">
   <h2>Cortes ({{ clips | length }})</h2>
   {% if clips and episode.status in ['done', 'failed'] and not episode.pending_action %}
@@ -160,8 +198,14 @@
       <form method="post" action="/clips/{{ clip.id }}/publish" class="row" style="margin-top:8px">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="datetime-local" name="scheduled_at" title="agendar (opcional)"
-               style="max-width:190px">
-        <select name="platform">
+               style="max-width:170px">
+        <select name="channel_id" title="conta de destino">
+          <option value="">cofre global &rarr;</option>
+          {% for ch in channels %}
+          <option value="{{ ch.id }}">{{ ch.name }} ({{ ch.platform }})</option>
+          {% endfor %}
+        </select>
+        <select name="platform" title="usado só quando 'cofre global' está selecionado">
           {% for platform, ready in publishers.items() %}
           <option value="{{ platform }}" {% if not ready %}disabled{% endif %}>
             {{ platform }}{{ '' if ready else ' (sem credenciais)' }}
@@ -176,6 +220,42 @@
         </select>
         <button type="submit" class="ghost">Enfileirar</button>
       </form>
+
+      {% if channels %}
+      <details style="margin-top:8px">
+        <summary class="muted">publicar em vários canais de uma vez</summary>
+        <form method="post" action="/clips/{{ clip.id }}/publish_many" style="margin-top:8px">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <div class="row" style="align-items:flex-start">
+            <div style="flex:1;min-width:200px">
+              {% for ch in channels %}
+              <label class="muted" style="display:block">
+                <input type="checkbox" name="channel_ids" value="{{ ch.id }}">
+                {{ ch.name }} <span class="muted">({{ ch.platform }} · {{ ch.market }})</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <select name="orientation">
+              <option value="vertical">vertical 9:16</option>
+              <option value="horizontal" {% if not clip.path_wide %}disabled{% endif %}>
+                horizontal 16:9{{ '' if clip.path_wide else ' (não gerado)' }}
+              </option>
+            </select>
+            <label class="muted">espaçar
+              <input type="number" name="stagger_minutes" value="15" min="0" max="1440"
+                     style="max-width:80px"> min entre contas
+            </label>
+            <button type="submit" class="ghost">Enfileirar em todos</button>
+          </div>
+          <p class="muted" style="margin:6px 0 0">
+            O espaçamento escalona os horários para não postar tudo no mesmo instante
+            (evita o padrão de spam multi-conta).
+          </p>
+        </form>
+      </details>
+      {% endif %}
       {% endif %}
     </div>
     {% endfor %}
@@ -189,10 +269,11 @@
 <div class="panel">
   <h2>Publicacoes</h2>
   <table>
-    <tr><th>Corte</th><th>Plataforma</th><th>Estado</th><th>Views</th><th>Curtidas</th><th>Link</th><th>Erro</th></tr>
+    <tr><th>Corte</th><th>Conta</th><th>Plataforma</th><th>Estado</th><th>Views</th><th>Curtidas</th><th>Link</th><th>Erro</th></tr>
     {% for post in posts %}
     <tr>
       <td class="muted">#{{ post.clip_idx + 1 }}</td>
+      <td class="muted">{{ post.channel_name or 'global' }}</td>
       <td>{{ post.platform }}{% if post.orientation == 'horizontal' %} <span class="muted">16:9</span>{% endif %}</td>
       <td><span class="tag {% if post.status == 'published' %}done{% elif post.status == 'failed' %}failed{% endif %}">{{ post.status }}</span></td>
       <td>{{ post.views if post.views is not none else '—' }}</td>

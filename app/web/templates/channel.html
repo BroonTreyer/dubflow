@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ channel.name }} — dubflow{% endblock %}
+{% block content %}
+
+<p class="muted"><a href="/channels">&larr; canais</a></p>
+
+{% if salvo %}
+<div class="note" style="border-left-color:var(--ok);background:#12211a;margin-bottom:16px">
+  Credenciais deste canal salvas. Já valem para as próximas publicações.
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="row" style="justify-content:space-between">
+    <h2 style="margin:0">{{ channel.name }}</h2>
+    <span class="tag {% if channel.status == 'active' %}done{% else %}run{% endif %}">{{ channel.status }}</span>
+  </div>
+  <p class="muted" style="margin-top:8px">
+    <span style="text-transform:capitalize">{{ channel.platform }}</span> ·
+    mercado {{ channel.market }} ·
+    nicho {{ channel.niche or '—' }} ·
+    <span class="tag {% if ready %}done{% else %}failed{% endif %}">
+      {{ 'conectado' if ready else 'faltam credenciais' }}
+    </span>
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Configuração</h2>
+  <form method="post" action="/channels/{{ channel.id }}/settings">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="row" style="margin-bottom:10px">
+      <label class="muted" style="min-width:110px">Nome</label>
+      <input type="text" name="name" value="{{ channel.name }}" required style="flex:1;min-width:220px">
+    </div>
+    <div class="row" style="margin-bottom:10px">
+      <label class="muted" style="min-width:110px">Segmento</label>
+      <input type="text" name="niche" value="{{ channel.niche or '' }}"
+             placeholder="ex.: podcast, filmes, notícias" style="flex:1;min-width:220px"
+             title="episódios classificados neste segmento roteiam os cortes para cá">
+    </div>
+    <div class="row" style="margin-bottom:14px">
+      <label class="muted" style="min-width:110px">Mercado</label>
+      <input type="text" name="market" value="{{ channel.market }}" style="max-width:100px">
+      <label class="muted" style="margin-left:16px">Cortes/dia
+        <input type="number" name="posts_per_day" value="{{ channel.posts_per_day }}"
+               min="1" max="50" style="max-width:80px">
+      </label>
+    </div>
+    <button type="submit" class="ghost">Salvar configuração</button>
+  </form>
+  {% if not channel.niche %}
+  <p class="note" style="margin-top:12px">
+    Sem <strong>segmento</strong> definido, este canal não recebe cortes na distribuição
+    automática. Defina um segmento acima.
+  </p>
+  {% endif %}
+</div>
+
+<div class="panel">
+  <h2>Credenciais desta conta</h2>
+  <p class="muted" style="margin-bottom:4px">
+    Guardadas só nesta máquina, em <code>data/channels/{{ channel.id }}/credentials.json</code>
+    (fora do git). Tokens de identidade da conta <strong>não herdam</strong> do cofre global —
+    cole os desta conta aqui. Um campo em branco não apaga o que já estava salvo.
+  </p>
+
+  <form method="post" action="/channels/{{ channel.id }}/credentials">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% for key in keys %}
+    <div class="row" style="margin:10px 0">
+      <label class="muted" for="f_{{ key }}" style="min-width:210px">
+        {{ key }}
+        {% if status.get(key) %}<span style="color:var(--ok)" title="preenchido">●</span>{% endif %}
+        {% if key in shared_keys %}<span class="muted" title="compartilhado: herda do cofre global se vazio">(comum)</span>{% endif %}
+      </label>
+      {% if key in secret_keys %}
+      <input type="password" id="f_{{ key }}" name="{{ key }}" autocomplete="off"
+             placeholder="{{ 'salvo — cole um novo para trocar' if status.get(key) else 'colar token' }}"
+             style="flex:1;min-width:280px">
+      {% else %}
+      <input type="text" id="f_{{ key }}" name="{{ key }}" value="{{ values.get(key, '') }}"
+             placeholder="{{ key }}" style="flex:1;min-width:280px">
+      {% endif %}
+    </div>
+    {% endfor %}
+    <button type="submit" style="margin-top:14px">Salvar credenciais</button>
+  </form>
+
+  {% if channel.platform == 'youtube' %}
+  <p class="muted" style="margin-top:16px;margin-bottom:0">
+    Para gerar o <code>YOUTUBE_REFRESH_TOKEN</code> desta conta: preencha CLIENT_ID/SECRET,
+    salve, e rode <code>.venv\Scripts\python.exe -m scripts.youtube_auth</code> logado
+    <strong>nesta</strong> conta do YouTube. Cole o token acima.
+  </p>
+  {% endif %}
+</div>
+
+{% endblock %}
