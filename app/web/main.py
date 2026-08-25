@@ -260,7 +260,9 @@ def update_channel_settings(request: Request, channel_id: int, name: str = Form(
         posts_per_day=max(1, int(posts_per_day or 3)),
         project=(project.strip() or None),
     )
-    return RedirectResponse(f"/channels/{channel_id}?salvo=1", status_code=303)
+    # Volta para a lista: a edicao acontece inline na tabela de /channels, entao
+    # o usuario continua preenchendo as outras linhas sem sair da tela.
+    return RedirectResponse("/channels", status_code=303)
 
 
 @app.get("/channels/{channel_id}", response_class=HTMLResponse, dependencies=panel)

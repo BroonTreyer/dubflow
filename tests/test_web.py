@@ -398,6 +398,19 @@ def main() -> int:
     check("cria canal via painel", r.status_code == 303, r.status_code)
     novo = [c for c in db.list_channels() if c["name"] == "Canal Painel"][0]
     check("GET detalhe do canal", client.get(f"/channels/{novo['id']}").status_code == 200)
+    # Edicao inline pela tabela (rota /settings): nome, mercado, segmento, projeto
+    # Cloud e cadencia; volta para a lista.
+    r = client.post(f"/channels/{novo['id']}/settings",
+                    data={"name": "Canal Renomeado", "market": "US", "niche": "podcast",
+                          "project": "proj-123", "posts_per_day": "5", "csrf": token},
+                    follow_redirects=False)
+    ed = db.get_channel(novo["id"])
+    check("settings edita inline e volta para a lista",
+          r.status_code == 303 and r.headers["location"] == "/channels", r.status_code)
+    check("settings grava nome/mercado/segmento",
+          ed["name"] == "Canal Renomeado" and ed["market"] == "US" and ed["niche"] == "podcast")
+    check("settings grava projeto Cloud e cadencia",
+          ed["project"] == "proj-123" and ed["posts_per_day"] == 5)
     r = client.post(f"/channels/{novo['id']}/credentials",
                     data={"YOUTUBE_CLIENT_ID": "cid-do-canal", "csrf": token}, follow_redirects=False)
     check("salva cred do canal pelo painel",

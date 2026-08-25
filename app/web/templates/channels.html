@@ -14,28 +14,64 @@
   </p>
 
   {% if channels %}
+  <p class="muted" style="margin-bottom:10px">
+    Edite <strong>nome, mercado, segmento, cortes/dia e projeto</strong> direto nesta tabela e
+    clique <em>salvar</em> na linha. As credenciais (e o refresh token do YouTube) ficam em
+    <em>abrir&nbsp;↗</em>.
+  </p>
+  <div style="overflow-x:auto">
   <table>
-    <tr><th>Canal</th><th>Plataforma</th><th>Mercado</th><th>Segmento</th><th>Cortes/dia</th><th>Credenciais</th><th>Estado</th><th></th></tr>
+    <tr>
+      <th>Canal</th><th>Plataforma</th><th>Mercado</th><th>Segmento</th>
+      <th>Cortes/dia</th><th>Projeto Cloud</th><th>Credenciais</th><th>Estado</th><th></th>
+    </tr>
     {% for ch in channels %}
     <tr>
-      <td><a href="/channels/{{ ch.id }}">{{ ch.name }}</a></td>
+      <td>
+        {# form "detached": mora aqui mas seus campos estao espalhados pelas celulas
+           via o atributo form= (HTML5), preservando o layout em colunas. #}
+        <form id="chE{{ ch.id }}" method="post" action="/channels/{{ ch.id }}/settings"></form>
+        <input type="hidden" name="csrf" value="{{ csrf }}" form="chE{{ ch.id }}">
+        <input type="text" name="name" value="{{ ch.name }}" form="chE{{ ch.id }}"
+               required style="width:150px">
+        <div><a href="/channels/{{ ch.id }}" class="muted" style="font-size:11px">abrir ↗</a></div>
+      </td>
       <td style="text-transform:capitalize">{{ ch.platform }}</td>
       <td>
-        {{ ch.market }}
-        {% if ch.project %}<br><span class="muted" style="font-size:11px" title="projeto do Google Cloud — canais com o mesmo projeto dividem a cota diaria de upload do YouTube">proj: {{ ch.project }}</span>{% endif %}
+        <select name="market" form="chE{{ ch.id }}"
+                title="define o idioma dos cortes que o canal recebe (BR→pt-BR, US→en, ES→es)">
+          {% for m in markets %}
+          <option value="{{ m }}" {% if m == ch.market %}selected{% endif %}>{{ m }}</option>
+          {% endfor %}
+        </select>
       </td>
-      <td class="muted">{{ ch.niche or '— (sem segmento)' }}</td>
-      <td class="muted">{{ ch.posts_per_day }}</td>
       <td>
-        <span class="tag {% if ch.ready %}done{% else %}failed{% endif %}">
-          {{ 'conectado' if ch.ready else 'faltam credenciais' }}
-        </span>
+        <input type="text" name="niche" value="{{ ch.niche or '' }}" form="chE{{ ch.id }}"
+               placeholder="segmento" style="width:130px"
+               title="episodios deste segmento roteiam os cortes para ca">
+      </td>
+      <td>
+        <input type="number" name="posts_per_day" value="{{ ch.posts_per_day }}" form="chE{{ ch.id }}"
+               min="1" max="50" style="width:60px">
+      </td>
+      <td>
+        <input type="text" name="project" value="{{ ch.project or '' }}" form="chE{{ ch.id }}"
+               placeholder="Cloud" style="width:120px"
+               title="canais com o mesmo projeto do Google Cloud dividem a cota de upload do YouTube">
+      </td>
+      <td>
+        <a href="/channels/{{ ch.id }}" title="colar credenciais / refresh token">
+          <span class="tag {% if ch.ready %}done{% else %}failed{% endif %}">
+            {{ 'conectado' if ch.ready else 'faltam credenciais' }}
+          </span>
+        </a>
       </td>
       <td>
         <span class="tag {% if ch.status == 'active' %}done{% else %}run{% endif %}">{{ ch.status }}</span>
       </td>
       <td>
         <div class="row">
+          <button type="submit" form="chE{{ ch.id }}">salvar</button>
           <form method="post" action="/channels/{{ ch.id }}/status">
             <input type="hidden" name="csrf" value="{{ csrf }}">
             <input type="hidden" name="status" value="{{ 'paused' if ch.status == 'active' else 'active' }}">
@@ -51,6 +87,7 @@
     </tr>
     {% endfor %}
   </table>
+  </div>
   {% else %}
   <p class="muted">Nenhum canal ainda. Crie o primeiro abaixo.</p>
   {% endif %}
