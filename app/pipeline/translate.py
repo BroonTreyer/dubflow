@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 import anthropic
 
-from app.config import settings
+from app.config import TARGET_LANGUAGES, settings
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ explicacoes, sem texto fora do JSON.
 """
 
 # Nome legivel de cada idioma de destino suportado (usado no prompt generico).
-LANG_NAMES = {"pt-BR": "portugues brasileiro", "en": "ingles (dos EUA)", "es": "espanhol"}
+LANG_NAMES = {code: spec["name"] for code, spec in TARGET_LANGUAGES.items()}
 
 # Prompt para idiomas que NAO sao pt-BR. O pt-BR continua usando SYSTEM_PROMPT
 # acima, palavra por palavra, para preservar a qualidade ja validada (e o cache).

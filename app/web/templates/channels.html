@@ -20,7 +20,10 @@
     <tr>
       <td><a href="/channels/{{ ch.id }}">{{ ch.name }}</a></td>
       <td style="text-transform:capitalize">{{ ch.platform }}</td>
-      <td>{{ ch.market }}</td>
+      <td>
+        {{ ch.market }}
+        {% if ch.project %}<br><span class="muted" style="font-size:11px" title="projeto do Google Cloud — canais com o mesmo projeto dividem a cota diaria de upload do YouTube">proj: {{ ch.project }}</span>{% endif %}
+      </td>
       <td class="muted">{{ ch.niche or '— (sem segmento)' }}</td>
       <td class="muted">{{ ch.posts_per_day }}</td>
       <td>
@@ -67,11 +70,10 @@
       </select>
     </div>
     <div class="row" style="margin-bottom:14px">
-      <select name="market" title="mercado alvo (afeta idioma/RPM)">
-        <option value="BR">BR</option>
-        <option value="US">US</option>
-        <option value="ES">ES</option>
-        <option value="OUTRO">outro</option>
+      <select name="market" title="mercado alvo — define o idioma dos cortes que o canal recebe (BR→pt-BR, US→en, ES→es)">
+        {% for m in markets %}
+        <option value="{{ m }}">{{ m }}</option>
+        {% endfor %}
       </select>
       <input type="text" name="niche" placeholder="segmento (ex.: podcast, filmes, notícias)"
              style="flex:1;min-width:200px"
@@ -80,12 +82,17 @@
         <input type="number" name="posts_per_day" value="3" min="1" max="50" style="max-width:80px">
       </label>
     </div>
+    <div class="row" style="margin-bottom:14px">
+      <input type="text" name="project" placeholder="projeto Cloud (opcional, só YouTube)"
+             style="flex:1;min-width:200px"
+             title="rótulo do projeto do Google Cloud; canais com o mesmo projeto dividem a cota diária de upload da YouTube API. Vazio = projeto próprio.">
+    </div>
     <button type="submit">Criar canal</button>
   </form>
   <p class="muted" style="margin-top:12px;margin-bottom:0">
-    O <strong>segmento</strong> é o que liga o canal aos cortes: um episódio classificado
-    como "podcast" só vai para canais de segmento "podcast". Depois de criar, abra o canal
-    para colar as credenciais daquela conta.
+    O <strong>segmento</strong> liga o canal aos cortes (episódio "podcast" só vai a canais
+    "podcast") e o <strong>mercado</strong> liga pelo idioma (vídeo em inglês só vai a canais US).
+    Depois de criar, abra o canal para colar as credenciais daquela conta.
   </p>
 </div>
 

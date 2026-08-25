@@ -42,7 +42,10 @@
     {% for ep in episodes %}
     <tr data-id="{{ ep.id }}">
       <td class="muted">{{ ep.id }}</td>
-      <td><a href="/episodes/{{ ep.id }}">{{ ep.title or ep.source_url[:60] }}</a></td>
+      <td>
+        <a href="/episodes/{{ ep.id }}">{{ ep.title or ep.source_url[:60] }}</a>
+        {% if ep.lang_dst %}<span class="muted" style="font-size:11px" title="idioma da legenda — roteia os cortes para canais deste mercado">{{ ep.lang_dst }}</span>{% endif %}
+      </td>
       <td class="muted">{{ ep.channel or '—' }}</td>
       <td>
         <span class="tag {% if ep.status == 'done' %}done{% elif ep.status == 'failed' %}failed

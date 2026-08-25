@@ -24,7 +24,7 @@ from fastapi.responses import (
 from fastapi.templating import Jinja2Templates
 
 from app import credentials, db, sales, security
-from app.config import configure_logging, settings
+from app.config import MARKET_OPTIONS, TARGET_LANGUAGES, configure_logging, settings
 from app.pipeline import archive
 from app.publishers import REGISTRY, status as publisher_status
 
@@ -218,6 +218,7 @@ def channels_page(request: Request):
         {
             "channels": chans,
             "platforms": list(REGISTRY.keys()),
+            "markets": MARKET_OPTIONS,
             "csrf": security.csrf_token(request),
         },
     )
@@ -226,12 +227,14 @@ def channels_page(request: Request):
 @app.post("/channels", dependencies=panel)
 def add_channel(request: Request, name: str = Form(...), platform: str = Form(...),
                 market: str = Form("BR"), niche: str = Form(""),
-                posts_per_day: int = Form(3), csrf: str = Form("")):
+                posts_per_day: int = Form(3), project: str = Form(""),
+                csrf: str = Form("")):
     security.require_csrf(request, csrf)
     if platform not in REGISTRY:
         raise HTTPException(400, f"plataforma desconhecida: {platform}")
     try:
-        channel_id = db.create_channel(name, platform, market, niche or None, posts_per_day)
+        channel_id = db.create_channel(name, platform, market, niche or None,
+                                       posts_per_day, project or None)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return RedirectResponse(f"/channels/{channel_id}", status_code=303)
@@ -240,8 +243,9 @@ def add_channel(request: Request, name: str = Form(...), platform: str = Form(..
 @app.post("/channels/{channel_id}/settings", dependencies=panel)
 def update_channel_settings(request: Request, channel_id: int, name: str = Form(...),
                             niche: str = Form(""), market: str = Form("BR"),
-                            posts_per_day: int = Form(3), csrf: str = Form("")):
-    """Edita nome, segmento (niche), mercado e cadencia de gotejamento do canal."""
+                            posts_per_day: int = Form(3), project: str = Form(""),
+                            csrf: str = Form("")):
+    """Edita nome, segmento (niche), mercado, cadencia e projeto Cloud do canal."""
     security.require_csrf(request, csrf)
     if db.get_channel(channel_id) is None:
         raise HTTPException(404, "canal nao encontrado")
@@ -254,6 +258,7 @@ def update_channel_settings(request: Request, channel_id: int, name: str = Form(
         niche=(niche.strip() or None),
         market=(market.strip() or "BR"),
         posts_per_day=max(1, int(posts_per_day or 3)),
+        project=(project.strip() or None),
     )
     return RedirectResponse(f"/channels/{channel_id}?salvo=1", status_code=303)
 
@@ -276,6 +281,7 @@ def channel_detail(request: Request, channel_id: int, salvo: int = 0):
         "channel.html",
         {
             "channel": channel,
+            "markets": MARKET_OPTIONS,
             "keys": keys,
             "secret_keys": credentials.SECRET_KEYS,
             "shared_keys": credentials.SHARED_KEYS,
@@ -323,9 +329,10 @@ def remove_channel(request: Request, channel_id: int, csrf: str = Form("")):
     return RedirectResponse("/channels", status_code=303)
 
 
-# Idiomas de destino oferecidos na ingestao (rotulo mostrado ao usuario).
-TARGET_LANGS = [("pt-BR", "Português (BR)"), ("en", "English (US)"), ("es", "Español")]
-_TARGET_LANG_CODES = {code for code, _ in TARGET_LANGS}
+# Idiomas de destino oferecidos na ingestao (codigo, rotulo). Derivado da fonte
+# unica em config para nao divergir do roteamento e do prompt de traducao.
+TARGET_LANGS = [(code, spec["label"]) for code, spec in TARGET_LANGUAGES.items()]
+_TARGET_LANG_CODES = set(TARGET_LANGUAGES)
 
 
 @app.post("/episodes", dependencies=panel)

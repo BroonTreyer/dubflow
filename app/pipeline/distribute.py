@@ -26,7 +26,7 @@ from typing import Any, Callable
 import anthropic
 
 from app import db
-from app.config import settings
+from app.config import TARGET_LANGUAGES, settings
 from app.pipeline import archive
 
 log = logging.getLogger(__name__)
@@ -59,7 +59,8 @@ _CLASSIFY_SCHEMA = {
 
 # Mercado do canal -> idioma da legenda que ele recebe. Um episodio so vai para
 # canais cujo idioma bate com o idioma em que ele foi legendado (lang_dst).
-MARKET_LANG = {"BR": "pt-BR", "US": "en", "ES": "es"}
+# Derivado da fonte unica em config para nao divergir do que a web oferece.
+MARKET_LANG = {spec["market"]: code for code, spec in TARGET_LANGUAGES.items()}
 
 
 def _slug(value: str | None) -> str:

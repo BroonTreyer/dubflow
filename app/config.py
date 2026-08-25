@@ -153,6 +153,22 @@ class Settings:
 settings = Settings()
 
 
+# Idiomas de destino suportados pela legenda. UMA fonte para os tres usos, que
+# antes viviam em tabelas paralelas (e divergiam em silencio): o rotulo mostrado
+# na ingestao (web), o mercado do canal que casa com o idioma no roteamento
+# (distribuicao) e o nome legivel injetado no prompt de traducao. Adicionar um
+# idioma aqui o propaga para os tres.
+TARGET_LANGUAGES: dict[str, dict[str, str]] = {
+    "pt-BR": {"label": "Português (BR)", "market": "BR", "name": "portugues brasileiro"},
+    "en": {"label": "English (US)", "market": "US", "name": "ingles (dos EUA)"},
+    "es": {"label": "Español", "market": "ES", "name": "espanhol"},
+}
+
+# Mercados oferecidos ao cadastrar um canal: os que casam com algum idioma, mais
+# "OUTRO" (canal sem alvo de idioma definido; nao entra no roteamento automatico).
+MARKET_OPTIONS: list[str] = [v["market"] for v in TARGET_LANGUAGES.values()] + ["OUTRO"]
+
+
 def configure_logging(component: str, level: int = logging.INFO) -> None:
     """Loga no console e tambem em data/logs/<component>.log, com rotacao.
 

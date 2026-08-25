@@ -723,9 +723,10 @@ def create_channel(name: str, platform: str, market: str = "BR",
     with connect() as conn:
         cur = conn.execute(
             "INSERT INTO channels (name, platform, market, niche, posts_per_day,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " project, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (name, platform, (market or "BR").strip() or "BR",
-             (niche or "").strip() or None, max(1, int(posts_per_day or 3)), ts, ts),
+             (niche or "").strip() or None, max(1, int(posts_per_day or 3)),
+             (project or "").strip() or None, ts, ts),
         )
         return int(cur.lastrowid)
 
