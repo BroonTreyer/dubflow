@@ -10,8 +10,9 @@ Duas saidas diferentes:
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 MAX_CHARS_PER_LINE = 42
 MAX_LINES = 2
@@ -343,8 +344,31 @@ def _escape_for_filter(path: Path) -> str:
     )
 
 
-def burn(video_path: Path, ass_path: Path, output_path: Path, crf: int = 20) -> Path:
-    """Queima a legenda ASS no video."""
+def probe_duration(video_path: Path) -> float | None:
+    """Duracao do video em segundos, via ffprobe. None se nao der para saber."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return None
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def burn(video_path: Path, ass_path: Path, output_path: Path, crf: int = 20,
+         duration: float | None = None,
+         on_progress: Callable[[float], None] | None = None) -> Path:
+    """Queima a legenda ASS no video.
+
+    Com `on_progress`, reporta o andamento real (0..1) durante a codificacao. Sem
+    isso a etapa fica horas sem dar sinal — e uma barra parada e indistinguivel
+    de um processo travado.
+    """
     cmd = [
         "ffmpeg", "-y", "-i", str(video_path),
         "-vf", f"subtitles='{_escape_for_filter(ass_path)}'",
@@ -353,7 +377,60 @@ def burn(video_path: Path, ass_path: Path, output_path: Path, crf: int = 20) -> 
         "-movflags", "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if result.returncode != 0:
-        raise RuntimeError(f"queima de legenda falhou: {result.stderr.strip()[-800:]}")
+
+    if on_progress is None:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise RuntimeError(f"queima de legenda falhou: {result.stderr.strip()[-800:]}")
+        return output_path
+
+    if duration is None:
+        duration = probe_duration(video_path)
+
+    # -progress escreve pares chave=valor no stdout, formato estavel (o stderr e
+    # texto humano e muda entre versoes). O stderr vai para arquivo: le-lo em
+    # paralelo travaria, e ele so importa se o ffmpeg falhar.
+    cmd = cmd[:1] + ["-progress", "pipe:1", "-nostats"] + cmd[1:]
+    _run_with_progress(cmd, duration, on_progress)
     return output_path
+
+
+PROGRESS_STEP = 0.005  # so reporta a cada meio ponto percentual
+
+
+def progress_fractions(linhas: Iterable[str], duration: float | None) -> Iterable[float]:
+    """Le o fluxo do `-progress` do ffmpeg e emite o andamento (0..1).
+
+    Sao pares chave=valor, uma por linha; interessa `out_time_us`, que vem como
+    "N/A" ate o primeiro frame sair. Emite so quando o valor andou o suficiente:
+    reportar cada linha encheria o banco de updates identicos.
+    """
+    if not duration or duration <= 0:
+        return
+    ultimo = 0.0
+    for linha in linhas:
+        if not linha.startswith("out_time_us="):
+            continue
+        try:
+            segundos = int(linha.split("=", 1)[1]) / 1_000_000
+        except ValueError:  # o "N/A" do inicio
+            continue
+        fracao = min(1.0, segundos / duration)
+        if fracao - ultimo >= PROGRESS_STEP:
+            ultimo = fracao
+            yield fracao
+
+
+def _run_with_progress(cmd: list[str], duration: float | None,
+                       on_progress: Callable[[float], None]) -> None:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err,
+                                text=True, encoding="utf-8", errors="replace")
+        assert proc.stdout is not None
+        for fracao in progress_fractions(proc.stdout, duration):
+            on_progress(fracao)
+        proc.wait()
+        if proc.returncode != 0:
+            err.seek(0)
+            raise RuntimeError(f"queima de legenda falhou: {err.read().strip()[-800:]}")

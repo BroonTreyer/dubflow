@@ -12,6 +12,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,12 @@ log = logging.getLogger(__name__)
 
 ASSETS = Path(__file__).parent / "assets"
 
+# Reframe 9:16 — parametros da "camera" que segue quem fala.
+FOCUS_FPS = 2.0          # amostras por segundo (troca de falante dura ~1 s)
+FOCUS_HYSTERESIS = 0.12  # so muda o enquadramento se o alvo andar mais que isso
+MIN_SEGMENT = 1.2        # segundos minimos entre dois cortes de camera
+MAX_SEGMENTS = 24        # teto de trocas por corte (a expressao do ffmpeg cresce)
+
 # Detectores de rosto, carregados uma vez. YuNet (DNN) e melhor — pega rosto de
 # lado e em angulo; o Haar frontal fica de reserva. Ambos tropecam em caminho com
 # acento no Windows, entao sao carregados de forma que contorna isso (ver abaixo).
@@ -33,28 +40,40 @@ _YUNET: Any = None
 _YUNET_LOADED = False
 
 SELECTION_PROMPT = """\
-Voce e editor de conteudo social. Recebe a transcricao de um episodio com \
-timestamps e escolhe os trechos que funcionam como video vertical independente \
-(Reels, TikTok, Shorts).
+Voce e editor de conteudo social e vive de fazer corte performar. Recebe um \
+trecho de episodio com timestamps e escolhe os pedacos que funcionam como video \
+vertical independente (Reels, TikTok, Shorts).
 
-O QUE FAZ UM CORTE FUNCIONAR
+Seu unico criterio e retencao: a pessoa esta rolando o feed e precisa parar no \
+seu corte e ficar ate o fim. Nao escolha o trecho "mais importante" do episodio \
+— escolha o que prende.
 
-- Ele se sustenta sozinho. Quem nunca viu o episodio entende sem contexto externo.
-- Os primeiros 3 segundos ja entregam tensao, contradicao, numero surpreendente ou \
-uma afirmacao forte. Um trecho que comeca com "entao, como eu estava dizendo" nao serve.
-- Tem inicio e fim proprios: uma ideia completa, nao um pedaco de raciocinio cortado.
-- Diz algo que a pessoa teria vontade de mandar para alguem.
+{genre_block}
+O QUE FAZ UM CORTE PERFORMAR
+
+- **Os 3 primeiros segundos decidem tudo.** O corte tem que abrir no meio da \
+tensao — uma acusacao, uma virada, uma frase que exige explicacao. Se abrir com \
+rodeio, preparacao ou "entao, como eu estava dizendo", esta morto.
+- **Uma emocao clara e forte**: raiva, vergonha alheia, revolta, desejo, choque, \
+graca. Trecho morno nao performa, por mais bem escrito que seja.
+- **Se sustenta sozinho.** Quem nunca viu o episodio entende sem contexto externo.
+- **Tem virada.** O melhor corte muda de direcao no meio: a resposta atravessada, \
+a revelacao, a frase que cala o outro.
+- **Termina em pico, nao em descida.** Corte na melhor frase — nunca na conversa \
+esfriando depois dela.
+- **Gera comentario.** A pessoa quer opinar, discordar ou marcar alguem.
 
 O QUE NAO SERVE
 
 - Apresentacoes, agradecimentos, "se inscreva no canal", leitura de patrocinio.
 - Trechos que dependem de imagem que voce nao viu (referencia a grafico na tela).
-- Conversa de transicao entre assuntos.
+- Conversa de transicao, logistica, gente combinando o que vai fazer.
+- Trecho tecnicamente correto mas sem carga emocional. Na duvida, deixe de fora.
 
 REGRAS
 
-- Escolha exatamente {count} trechos, ou menos se o episodio nao tiver material bom. \
-Nao complete a cota com trecho fraco.
+- Escolha ate {count} trechos deste bloco, ou menos se o material nao render. \
+Nao complete a cota com trecho fraco: e melhor devolver 4 fortes que 8 mornos.
 - Cada trecho entre {min_s} e {max_s} segundos.
 - Alinhe `start` e `end` ao inicio e ao fim de falas completas, usando os timestamps \
 fornecidos. Nunca corte no meio de uma frase.
@@ -71,10 +90,42 @@ Chamativo mas honesto — nada de clickbait que o trecho nao entrega. Sem hashta
 - `yt_description`: descricao para o YouTube, em pt-BR. Duas ou tres frases: o que o \
 trecho mostra e por que vale assistir, seguidas de 3 a 6 hashtags relevantes em uma \
 linha. Escreva para busca — use os termos que o publico procuraria.
-- `score`: 0 a 10, seu grau de confianca de que o trecho performa.
+- `score`: 0 a 10, o quanto voce aposta que ESTE corte performa. Use a escala \
+inteira e seja duro: 9-10 e o corte que voce publicaria hoje, 7-8 e bom, 5-6 e \
+mediano, abaixo de 5 nao deveria ter sido escolhido. Varios cortes com nota \
+parecida tornam o score inutil — ele e usado para ranquear os trechos do \
+episodio inteiro e cortar os piores.
 
 Responda apenas com o JSON do schema.
 """
+
+GENRE_PROMPT = """\
+Voce recebe amostras da transcricao de um video e responde o que ele e, para \
+orientar um editor de cortes. Seja concreto e curto.
+
+- `genre`: o formato em poucas palavras (ex.: "novela turca dublada", \
+"podcast de entrevista", "aula de matematica", "gameplay comentado").
+- `audience`: quem assiste isso e o que essa pessoa procura.
+- `viral_criteria`: 3 a 5 bullets do que faz um corte DESTE formato performar \
+em Reels/TikTok. Especifico do formato, nao conselho generico: numa novela sao \
+brigas, declaracoes, humilhacoes e revelacoes; num podcast sao opinioes \
+polemicas e historias pessoais; numa aula e o macete que resolve rapido.
+- `avoid`: o que neste formato parece bom e nao e.
+
+Responda apenas com o JSON do schema.
+"""
+
+GENRE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "genre": {"type": "string"},
+        "audience": {"type": "string"},
+        "viral_criteria": {"type": "array", "items": {"type": "string"}},
+        "avoid": {"type": "string"},
+    },
+    "required": ["genre", "audience", "viral_criteria", "avoid"],
+    "additionalProperties": False,
+}
 
 CLIP_SCHEMA = {
     "type": "object",
@@ -104,30 +155,108 @@ CLIP_SCHEMA = {
 }
 
 
-def select_clips(
-    segments: list[dict[str, Any]],
-    meta: dict[str, Any],
-    count: int | None = None,
-) -> list[dict[str, Any]]:
-    """Pede a Claude os melhores trechos do episodio."""
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY nao configurada.")
+def target_count(duration_s: float) -> int:
+    """Quantos cortes um episodio desta duracao deve render."""
+    alvo = round((duration_s / 3600.0) * settings.clips_per_hour)
+    # O piso vale para video curto (10 min nao pode voltar com 3 cortes so porque
+    # a conta deu 3), mas nunca pode passar do teto.
+    alvo = max(alvo, min(settings.clips_per_episode, settings.clips_max))
+    return int(min(alvo, settings.clips_max))
 
-    count = count or settings.clips_per_episode
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
+def _detect_genre(client: anthropic.Anthropic, segments: list[dict[str, Any]],
+                  meta: dict[str, Any]) -> dict[str, Any] | None:
+    """Le uma amostra do episodio e devolve o que faz um corte DELE performar.
+
+    Sem isto o prompt de selecao fala de "numero surpreendente" e "leitura de
+    patrocinio" para uma novela — criterios de podcast aplicados a ficcao.
+    """
+    textos = [(s.get("text") or "").strip() for s in segments if (s.get("text") or "").strip()]
+    if not textos:
+        return None
+
+    # Amostra de tres pontos: abertura, meio e fim tem cara diferente no mesmo video.
+    n = len(textos)
+    amostra = textos[: min(60, n)] + textos[n // 2: n // 2 + 60] + textos[-60:]
+
+    try:
+        response = client.messages.create(
+            model=settings.clip_scan_model,
+            max_tokens=1500,
+            system=[{"type": "text", "text": GENRE_PROMPT}],
+            output_config={"format": {"type": "json_schema", "schema": GENRE_SCHEMA}},
+            messages=[{
+                "role": "user",
+                "content": (f"Titulo: {meta.get('title')}\nCanal: {meta.get('channel')}\n\n"
+                            "Amostras da transcricao:\n" + "\n".join(amostra)),
+            }],
+        )
+        if response.stop_reason == "refusal":
+            return None
+        text = next((b.text for b in response.content if b.type == "text"), "")
+        return json.loads(text)
+    except Exception as exc:  # o reconhecimento e um extra: sem ele a selecao ainda roda
+        log.warning("deteccao de genero falhou (%s) — seguindo com criterios genericos", exc)
+        return None
+
+
+def _genre_block(genre: dict[str, Any] | None) -> str:
+    if not genre:
+        return ""
+    criterios = "\n".join(f"- {c}" for c in genre.get("viral_criteria") or [])
+    return (
+        "ESTE VIDEO ESPECIFICAMENTE\n\n"
+        f"Formato: {genre.get('genre')}\n"
+        f"Publico: {genre.get('audience')}\n\n"
+        f"O que faz um corte deste formato performar:\n{criterios}\n\n"
+        f"Evite neste formato: {genre.get('avoid')}\n\n"
+    )
+
+
+def _windows(segments: list[dict[str, Any]], count: int) -> list[tuple[list[dict[str, Any]], int]]:
+    """Fatia o episodio em janelas de analise, com a cota de cada uma."""
+    if not segments:
+        return []
+    duracao = max(float(s["end"]) for s in segments)
+    janela_s = max(300, settings.clip_window_minutes * 60)
+    n_janelas = max(1, round(duracao / janela_s))
+    if n_janelas == 1:
+        return [(segments, count)]
+
+    passo = duracao / n_janelas
+    out: list[tuple[list[dict[str, Any]], int]] = []
+    for i in range(n_janelas):
+        ini, fim = i * passo, (i + 1) * passo
+        bloco = [s for s in segments if ini <= float(s["start"]) < fim]
+        if not bloco:
+            continue
+        # Pede com folga por janela: parte vira sobreposicao ou cai no corte final
+        # por score, e uma janela fraca nao deve arrastar a cota do episodio.
+        cota = max(2, round(count / n_janelas) + 2)
+        out.append((bloco, cota))
+    return out
+
+
+def _select_window(client: anthropic.Anthropic, bloco: list[dict[str, Any]], cota: int,
+                   meta: dict[str, Any], genre_block: str) -> list[dict[str, Any]]:
     transcript = [
         {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s.get("text") or ""}
-        for s in segments
+        for s in bloco
         if (s.get("text") or "").strip()
     ]
+    if not transcript:
+        return []
 
     system = SELECTION_PROMPT.format(
-        count=count, min_s=settings.clip_min_seconds, max_s=settings.clip_max_seconds
+        count=cota, genre_block=genre_block,
+        min_s=settings.clip_min_seconds, max_s=settings.clip_max_seconds,
     )
+    ini_min = int(transcript[0]["start"] // 60)
+    fim_min = int(transcript[-1]["end"] // 60)
     user = (
-        f"Episodio: {meta.get('title')}\nCanal: {meta.get('channel')}\n\n"
-        "Transcricao com timestamps (segundos):\n"
+        f"Episodio: {meta.get('title')}\nCanal: {meta.get('channel')}\n"
+        f"Bloco analisado: minuto {ini_min} ao {fim_min} do episodio.\n\n"
+        "Transcricao com timestamps (segundos, na escala do episodio inteiro):\n"
         "```json\n" + json.dumps(transcript, ensure_ascii=False) + "\n```"
     )
 
@@ -143,16 +272,67 @@ def select_clips(
     )
 
     if response.stop_reason == "refusal":
-        log.warning("selecao de cortes recusada pelos classificadores")
+        log.warning("selecao de cortes recusada pelos classificadores (minuto %d-%d)",
+                    ini_min, fim_min)
         return []
 
     text = next((b.text for b in response.content if b.type == "text"), "")
-    clips = json.loads(text).get("clips", [])
-    return _sanitize(clips, segments)
+    return json.loads(text).get("clips", [])
 
 
-def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Encaixa cada corte nas fronteiras reais de fala e remove sobreposicao."""
+def select_clips(
+    segments: list[dict[str, Any]],
+    meta: dict[str, Any],
+    count: int | None = None,
+) -> list[dict[str, Any]]:
+    """Pede a Claude os melhores trechos do episodio, janela por janela."""
+    if not settings.anthropic_api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY nao configurada.")
+    if not segments:
+        return []
+
+    duracao = max(float(s["end"]) for s in segments)
+    count = count or target_count(duracao)
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+    genre = _detect_genre(client, segments, meta)
+    if genre:
+        log.info("cortes: formato reconhecido como '%s'", genre.get("genre"))
+    genre_block = _genre_block(genre)
+
+    janelas = _windows(segments, count)
+    log.info("cortes: alvo de %d em %.0f min, analisando em %d janela(s)",
+             count, duracao / 60, len(janelas))
+
+    bruto: list[dict[str, Any]] = []
+    if len(janelas) == 1:
+        bruto = _select_window(client, janelas[0][0], janelas[0][1], meta, genre_block)
+    else:
+        # Janelas sao independentes entre si, entao vao em paralelo — senao um
+        # episodio de 2h faria 7 chamadas de alto effort em fila.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(_select_window, client, bloco, cota, meta, genre_block)
+                for bloco, cota in janelas
+            ]
+            for fut in futures:
+                try:
+                    bruto.extend(fut.result())
+                except Exception as exc:
+                    # Uma janela que falha nao pode derrubar o episodio inteiro.
+                    log.warning("uma janela de selecao falhou (%s) — seguindo com as demais", exc)
+
+    return _sanitize(bruto, segments, count)
+
+
+def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
+              limit_count: int | None = None) -> list[dict[str, Any]]:
+    """Encaixa cada corte nas fronteiras reais de fala e remove sobreposicao.
+
+    Os cortes chegam de varias janelas, entao a disputa por sobreposicao e
+    resolvida por score: percorrer na ordem do episodio faria o corte pior
+    ganhar do melhor so por comecar antes.
+    """
     if not segments:
         return []
     starts = sorted({float(s["start"]) for s in segments})
@@ -161,6 +341,8 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]]) -> li
 
     def nearest(values: list[float], target: float) -> float:
         return min(values, key=lambda v: abs(v - target))
+
+    clips = sorted(clips, key=lambda c: float(c.get("score") or 0), reverse=True)
 
     cleaned: list[dict[str, Any]] = []
     for clip in clips:
@@ -190,6 +372,10 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]]) -> li
                 "score": float(clip.get("score") or 0),
             }
         )
+
+    if limit_count is not None:
+        # cleaned ja esta em ordem de score, entao o corte do teto tira os piores.
+        cleaned = cleaned[:limit_count]
 
     cleaned.sort(key=lambda c: c["start"])
     return cleaned
@@ -280,8 +466,12 @@ def _load_yunet() -> Any:
     return _YUNET
 
 
-def _face_centers(img: Any) -> list[tuple[float, float]]:
-    """Devolve (centro_x_px, area) de cada rosto no frame — YuNet, senao Haar."""
+def _face_boxes(img: Any) -> list[tuple[float, float, float, float]]:
+    """Devolve (x, y, w, h) em pixels de cada rosto no frame — YuNet, senao Haar.
+
+    A caixa inteira importa, nao so o centro: sem a largura nao da para garantir
+    que o rosto caiba dentro da janela 9:16 em vez de ser cortado ao meio.
+    """
     import cv2
 
     h, w = img.shape[:2]
@@ -291,7 +481,7 @@ def _face_centers(img: Any) -> list[tuple[float, float]]:
         _, faces = yunet.detect(img)
         if faces is None:
             return []
-        return [(float(f[0] + f[2] / 2), float(f[2] * f[3])) for f in faces]
+        return [(float(f[0]), float(f[1]), float(f[2]), float(f[3])) for f in faces]
 
     cascade = _load_cascade()
     if cascade is None:
@@ -301,7 +491,77 @@ def _face_centers(img: Any) -> list[tuple[float, float]]:
         gray, scaleFactor=1.1, minNeighbors=5,
         minSize=(int(h * 0.08), int(h * 0.08)),
     )
-    return [(float(x + fw / 2), float(fw * fh)) for (x, _y, fw, fh) in faces]
+    return [(float(x), float(y), float(fw), float(fh)) for (x, y, fw, fh) in faces]
+
+
+def _face_centers(img: Any) -> list[tuple[float, float]]:
+    """(centro_x_px, area) de cada rosto — atalho sobre _face_boxes."""
+    return [(x + w / 2, w * h) for (x, _y, w, h) in _face_boxes(img)]
+
+
+def _window_ratio(frame_w: int, frame_h: int) -> float:
+    """Fracao da largura do frame que a janela 9:16 cobre (1.0 = frame inteiro)."""
+    if frame_w <= 0 or frame_h <= 0:
+        return 1.0
+    return min(1.0, (1080 / 1920) * (frame_h / frame_w))
+
+
+def _focus_for_span(x0: float, x1: float, frame_w: int, frame_h: int,
+                    margin: float = 0.02) -> float:
+    """Posiciona a janela 9:16 de modo a conter o intervalo [x0, x1] inteiro.
+
+    x0/x1 sao normalizados (0..1) e delimitam o que precisa aparecer — a caixa do
+    rosto escolhido, ou a de um grupo de rostos. Quando o intervalo cabe na
+    janela, o resultado e o enquadramento mais centrado que ainda nao corta
+    ninguem; quando nao cabe, centraliza no meio do intervalo (o chamador ja
+    deveria ter escolhido um subconjunto que coubesse).
+    """
+    r = _window_ratio(frame_w, frame_h)
+    if r >= 1:  # fonte ja e 9:16 ou mais estreita: nao ha corte horizontal a fazer
+        return 0.5
+
+    centro = (x0 + x1) / 2
+    ideal = (centro - r / 2) / (1 - r)
+
+    # Faixa de posicoes que mantem [x0-margem, x1+margem] dentro da janela.
+    lo = (x1 + margin - r) / (1 - r)
+    hi = (x0 - margin) / (1 - r)
+    if lo <= hi:
+        ideal = max(lo, min(hi, ideal))
+    return max(0.0, min(1.0, ideal))
+
+
+def _pick_group(boxes: list[tuple[float, float, float, float]],
+                pesos: list[float], frame_w: int, frame_h: int,
+                margin: float = 0.02) -> tuple[float, float] | None:
+    """Escolhe o que enquadrar: um rosto, ou os vizinhos que cabem junto com ele.
+
+    Substitui a media ponderada de todos os rostos, que era o bug real — com duas
+    pessoas afastadas a media caia no vazio entre elas e cortava as duas.
+    """
+    if not boxes:
+        return None
+    r = _window_ratio(frame_w, frame_h)
+    util = max(0.0, r - 2 * margin)  # largura aproveitavel dentro da janela
+
+    ordem = sorted(range(len(boxes)), key=lambda i: boxes[i][0])
+    melhor: tuple[float, float, float] | None = None  # (peso, x0, x1)
+
+    # Cada rosto e uma semente; o grupo cresce enquanto o conjunto couber na janela.
+    for pos, i in enumerate(ordem):
+        x0 = boxes[i][0] / frame_w
+        x1 = (boxes[i][0] + boxes[i][2]) / frame_w
+        peso = pesos[i]
+        for j in ordem[pos + 1:]:
+            nx0 = min(x0, boxes[j][0] / frame_w)
+            nx1 = max(x1, (boxes[j][0] + boxes[j][2]) / frame_w)
+            if (nx1 - nx0) > util:
+                break  # o proximo rosto ja nao cabe junto: fecha o grupo aqui
+            x0, x1, peso = nx0, nx1, peso + pesos[j]
+        if melhor is None or peso > melhor[0]:
+            melhor = (peso, x0, x1)
+
+    return (melhor[1], melhor[2]) if melhor else None
 
 
 def _focus_from_center(cx_norm: float, frame_w: int, frame_h: int) -> float:
@@ -320,8 +580,13 @@ def _focus_from_center(cx_norm: float, frame_w: int, frame_h: int) -> float:
     return max(0.0, min(1.0, focus))
 
 
-def _detect_focus(video_path: Path, start: float, duration: float) -> float | None:
-    """Amostra frames do trecho e devolve onde a janela 9:16 deve focar (0..1).
+def _detect_focus(video_path: Path, start: float,
+                  duration: float) -> list[tuple[float, float]] | None:
+    """Devolve a trilha [(segundo, foco 0..1)] que a janela 9:16 deve seguir.
+
+    Uma so posicao para o corte inteiro nao da conta de cena com duas pessoas: a
+    janela precisa acompanhar quem esta falando. A lista e sempre nao-vazia e
+    comeca em t=0; um corte sem troca de enquadramento volta com um item so.
 
     Devolve None quando nao ha como decidir (sem opencv, sem ffmpeg, ou nenhum
     rosto encontrado) — o chamador entao usa o recorte central. Os frames saem
@@ -335,10 +600,9 @@ def _detect_focus(video_path: Path, start: float, duration: float) -> float | No
     if _load_yunet() is None and _load_cascade() is None:
         return None
 
-    n = max(4, min(12, int(duration / 3)))
-    rate = n / max(duration, 1.0)
+    rate = FOCUS_FPS
     with tempfile.TemporaryDirectory(prefix="dubflow_focus_") as td:
-        pattern = str(Path(td) / "f_%03d.jpg")
+        pattern = str(Path(td) / "f_%04d.jpg")
         cmd = [
             "ffmpeg", "-y",
             "-ss", f"{start:.2f}", "-t", f"{duration:.2f}", "-i", str(video_path),
@@ -356,28 +620,149 @@ def _detect_focus(video_path: Path, start: float, duration: float) -> float | No
             log.warning("extracao de frames para deteccao falhou; reframe central")
             return None
 
-        soma_cx = 0.0
-        peso = 0.0
+        amostras: list[tuple[float, float, float]] = []  # (t, x0, x1) do grupo escolhido
         frame_w = frame_h = 0
-        for frame in sorted(Path(td).glob("f_*.jpg")):
+        anterior = None
+        for i, frame in enumerate(sorted(Path(td).glob("f_*.jpg"))):
             img = cv2.imread(str(frame))
             if img is None:
                 continue
             frame_h, frame_w = img.shape[:2]
-            for cx, area in _face_centers(img):
-                # Pondera pela area: o rosto maior manda no enquadramento, o que
-                # mantem o corte estavel quando ha um rosto de fundo pequeno.
-                soma_cx += cx * area
-                peso += area
+            cinza = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            boxes = _face_boxes(img)
+            if boxes:
+                # Peso = tamanho do rosto, multiplicado pela boca em movimento. Numa
+                # conversa os dois rostos tem area parecida; quem fala e o criterio
+                # que decide, e e o que o espectador espera ver enquadrado.
+                fala = _mouth_activity(cinza, anterior, boxes)
+                pesos = [(b[2] * b[3]) * (1.0 + 2.0 * a) for b, a in zip(boxes, fala)]
+                grupo = _pick_group(boxes, pesos, frame_w, frame_h)
+                if grupo is not None:
+                    amostras.append((i / rate, grupo[0], grupo[1]))
+            anterior = cinza
 
-    if peso <= 0 or frame_w == 0:
+    if not amostras or frame_w == 0:
         return None
-    return _focus_from_center((soma_cx / peso) / frame_w, frame_w, frame_h)
+    return _build_track(amostras, frame_w, frame_h, duration)
 
 
-def _reframe_filter(mode: str, focus: float, ass_path: Path) -> str:
-    """Monta o filtro do ffmpeg que leva o video a 9:16 e queima a legenda."""
-    sub = f"subtitles='{subtitles._escape_for_filter(ass_path)}'"
+def _mouth_activity(cinza: Any, anterior: Any,
+                    boxes: list[tuple[float, float, float, float]]) -> list[float]:
+    """Quanto a boca de cada rosto se mexeu desde o frame anterior (0..1).
+
+    Aproximacao barata de "quem esta falando": compara a faixa da boca (terco
+    inferior do rosto) com o mesmo recorte do frame anterior. E relativa ao frame,
+    entao um corte de camera — que mexe tudo de uma vez — nao elege ninguem.
+    """
+    if anterior is None or anterior.shape != cinza.shape:
+        return [0.0] * len(boxes)
+
+    import numpy as np
+
+    brutos: list[float] = []
+    for (x, y, w, h) in boxes:
+        bx0, bx1 = int(x + w * 0.2), int(x + w * 0.8)
+        by0, by1 = int(y + h * 0.6), int(y + h * 1.0)
+        bx0, by0 = max(0, bx0), max(0, by0)
+        bx1 = min(cinza.shape[1], bx1)
+        by1 = min(cinza.shape[0], by1)
+        if bx1 - bx0 < 4 or by1 - by0 < 4:
+            brutos.append(0.0)
+            continue
+        atual = cinza[by0:by1, bx0:bx1].astype("float32")
+        antes = anterior[by0:by1, bx0:bx1].astype("float32")
+        brutos.append(float(np.abs(atual - antes).mean()))
+
+    teto = max(brutos) if brutos else 0.0
+    if teto < 2.0:  # ninguem se mexeu de verdade: nao inventa um falante
+        return [0.0] * len(boxes)
+    return [b / teto for b in brutos]
+
+
+def _build_track(amostras: list[tuple[float, float, float]], frame_w: int, frame_h: int,
+                 duration: float) -> list[tuple[float, float]]:
+    """Transforma as amostras por frame numa trilha estavel de (tempo, foco).
+
+    Duas travas contra a "camera nervosa": a mediana movel absorve deteccao que
+    pisca, e a histerese so publica uma mudanca quando ela e grande e se sustenta
+    por MIN_SEGMENT segundos. O resultado e um corte de camera, nao um tremor.
+    """
+    focos = [
+        (t, _focus_for_span(x0, x1, frame_w, frame_h))
+        for (t, x0, x1) in amostras
+    ]
+
+    # Mediana movel de 5 amostras (~2,5 s): remove deteccao isolada fora do lugar.
+    suave: list[tuple[float, float]] = []
+    for i, (t, _f) in enumerate(focos):
+        janela = [f for _t, f in focos[max(0, i - 2): i + 3]]
+        suave.append((t, sorted(janela)[len(janela) // 2]))
+
+    trilha: list[tuple[float, float]] = []
+    atual = suave[0][1]
+    trilha.append((0.0, atual))
+    candidato: tuple[float, float] | None = None
+    for t, f in suave:
+        if abs(f - atual) < FOCUS_HYSTERESIS:
+            candidato = None
+            continue
+        if candidato is None or abs(f - candidato[1]) >= FOCUS_HYSTERESIS:
+            candidato = (t, f)
+            continue
+        # O novo enquadramento se manteve tempo suficiente: vira corte de camera.
+        # A distancia minima vale entre os tempos PUBLICADOS (candidato[0], nao t):
+        # comparar com t deixaria passar dois cortes colados no inicio do trecho.
+        if t - candidato[0] >= MIN_SEGMENT and candidato[0] - trilha[-1][0] >= MIN_SEGMENT:
+            atual = candidato[1]
+            trilha.append((candidato[0], atual))
+            candidato = None
+
+    if len(trilha) > MAX_SEGMENTS:
+        trilha = trilha[:MAX_SEGMENTS]
+    return trilha
+
+
+Track = float | list[tuple[float, float]]
+
+
+def _focus_expr(track: Track) -> str:
+    """Expressao de foco para o ffmpeg: constante, ou variavel no tempo.
+
+    Com mais de um segmento vira um if aninhado sobre `t`, que o crop avalia a
+    cada frame — e assim a janela corta de uma pessoa para a outra no meio do
+    trecho, em vez de ficar parada no meio das duas.
+    """
+    if isinstance(track, (int, float)):
+        return f"{float(track):.4f}"
+    if len(track) == 1:
+        return f"{track[0][1]:.4f}"
+
+    # Do fim para o inicio: if(lt(t,T1),F0, if(lt(t,T2),F1, ... Fn))
+    expr = f"{track[-1][1]:.4f}"
+    for (t_corte, _f), (_t_ant, f_ant) in zip(track[:0:-1], track[-2::-1]):
+        expr = f"if(lt(t\\,{t_corte:.2f})\\,{f_ant:.4f}\\,{expr})"
+    return expr
+
+
+def _focus_at(track: Track, t: float) -> float:
+    """O foco vigente em um instante — usado pela capa vertical (frame unico)."""
+    if isinstance(track, (int, float)):
+        return float(track)
+    atual = track[0][1]
+    for t_corte, f in track:
+        if t_corte <= t:
+            atual = f
+        else:
+            break
+    return atual
+
+
+def _vertical_chain(mode: str, focus: Track) -> str:
+    """Cadeia que leva o quadro a 9:16, terminando no rotulo [framed].
+
+    Fica separada da queima de legenda porque a thumbnail vertical precisa do
+    mesmo enquadramento do corte — e uma capa com a cabeca cortada nao serve.
+    """
     if mode == "pad":
         # Legado: o video inteiro encolhido no meio de um fundo borrado. Nao foca
         # na cena — a faixa util fica pequena entre duas barras desfocadas.
@@ -385,17 +770,41 @@ def _reframe_filter(mode: str, focus: float, ass_path: Path) -> str:
             "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             "crop=1080:1920,boxblur=22:2[bg];"
             "[0:v]scale=1080:-2[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2[framed];"
-            f"[framed]{sub}[v]"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[framed]"
         )
-    # face/center: recorta uma janela 9:16 que preenche a tela. `focus` desliza a
+    # face/center: recorta uma janela 9:16 que preenche a tela. O foco desliza a
     # janela na horizontal (0=esquerda, 0.5=centro, 1=direita); (in_w-out_w) e a
     # folga real, entao o corte nunca sai do quadro.
     return (
         "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
-        f"crop=1080:1920:x='(in_w-out_w)*{focus:.4f}':y='(in_h-out_h)/2'[framed];"
-        f"[framed]{sub}[v]"
+        f"crop=1080:1920:x='(in_w-out_w)*({_focus_expr(focus)})':y='(in_h-out_h)/2'[framed]"
     )
+
+
+def _reframe_filter(mode: str, focus: Track, ass_path: Path) -> str:
+    """Monta o filtro do ffmpeg que leva o video a 9:16 e queima a legenda."""
+    sub = f"subtitles='{subtitles._escape_for_filter(ass_path)}'"
+    return f"{_vertical_chain(mode, focus)};[framed]{sub}[v]"
+
+
+# O reframe de um mesmo trecho e reusado pela thumbnail vertical: detectar rosto
+# custa extracao de frames, e rodar duas vezes so para a capa nao se paga.
+_REFRAME_CACHE: dict[tuple[str, float, float], tuple[str, Track]] = {}
+
+
+def _resolve_reframe(video_path: Path, start: float, duration: float) -> tuple[str, Track]:
+    """Decide o modo de enquadramento e a trilha de foco da janela 9:16."""
+    mode = settings.clip_reframe
+    if mode != "face":
+        return mode, 0.5
+
+    key = (str(video_path), round(start, 2), round(duration, 2))
+    if key not in _REFRAME_CACHE:
+        detected = _detect_focus(video_path, start, duration)
+        # Sem rosto (ou sem detector), cai para o centro: preenche a tela do mesmo
+        # jeito, so nao segue o rosto.
+        _REFRAME_CACHE[key] = ("center", 0.5) if detected is None else ("face", detected)
+    return _REFRAME_CACHE[key]
 
 
 def render_clip(
@@ -427,15 +836,7 @@ def render_clip(
         karaoke=karaoke,
     )
 
-    mode = settings.clip_reframe
-    focus = 0.5
-    if mode == "face":
-        detected = _detect_focus(video_path, start, duration)
-        # Sem rosto (ou sem detector), cai para o centro: preenche a tela do mesmo
-        # jeito, so nao segue o rosto.
-        mode = "center" if detected is None else "face"
-        focus = 0.5 if detected is None else detected
-
+    mode, focus = _resolve_reframe(video_path, start, duration)
     filter_complex = _reframe_filter(mode, focus, ass_path)
 
     cmd = [
@@ -514,20 +915,31 @@ def render_clip_wide(
     return output_path
 
 
-def make_thumbnail(video_path: Path, clip: dict[str, Any], output_path: Path) -> Path | None:
-    """Extrai um frame do meio do trecho como thumbnail 1280x720 (16:9).
+def make_thumbnail(video_path: Path, clip: dict[str, Any], output_path: Path,
+                   vertical: bool = False) -> Path | None:
+    """Extrai um frame do meio do trecho como thumbnail.
+
+    Horizontal (padrao) sai 1280x720, para o YouTube. Vertical sai 1080x1920 com
+    o MESMO enquadramento do corte — e a capa do Reels/TikTok/Short, entao usar o
+    recorte 16:9 ali entregaria uma capa com a cabeca cortada.
 
     Nunca derruba o pipeline: e um extra, entao qualquer falha vira None e o corte
     segue sem thumbnail.
     """
     start, end = float(clip["start"]), float(clip["end"])
-    meio = start + (end - start) / 2
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", f"{meio:.2f}", "-i", str(video_path), "-frames:v", "1",
-        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720",
-        "-q:v", "3", str(output_path),
-    ]
+    duration = end - start
+    meio = start + duration / 2
+
+    cmd = ["ffmpeg", "-y", "-ss", f"{meio:.2f}", "-i", str(video_path), "-frames:v", "1"]
+    if vertical:
+        mode, track = _resolve_reframe(video_path, start, duration)
+        # A capa e um frame so: usa o foco vigente naquele instante da trilha.
+        focus = _focus_at(track, duration / 2)
+        cmd += ["-filter_complex", _vertical_chain(mode, focus), "-map", "[framed]"]
+    else:
+        cmd += ["-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"]
+    cmd += ["-q:v", "3", str(output_path)]
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace")

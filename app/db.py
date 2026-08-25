@@ -42,7 +42,8 @@ EPISODE_COLUMNS = {
 # de mudar o estilo da legenda).
 ACTIONS = ("burn", "rerender_clips")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
-                "yt_description", "score", "path", "path_wide", "thumb_path", "status"}
+                "yt_description", "score", "path", "path_wide", "thumb_path",
+                "thumb_vertical_path", "status"}
 POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
                 "scheduled_at", "posted_at", "attempts",
                 "views", "likes", "comments", "stats_at"}
@@ -88,6 +89,7 @@ CREATE TABLE IF NOT EXISTS clips (
     path           TEXT,
     path_wide      TEXT,
     thumb_path     TEXT,
+    thumb_vertical_path TEXT,
     status         TEXT NOT NULL DEFAULT 'pending',
     created_at     TEXT NOT NULL
 );
@@ -177,6 +179,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE clips ADD COLUMN path_wide TEXT")
         if "thumb_path" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_path TEXT")
+        if "thumb_vertical_path" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_vertical_path TEXT")
         if "yt_title" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN yt_title TEXT")
         if "yt_description" not in clip_columns:
@@ -438,7 +442,8 @@ def pending_posts() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
             "SELECT p.*, c.path AS clip_path, c.path_wide AS clip_path_wide,"
-            " c.thumb_path AS clip_thumb, c.caption AS clip_caption,"
+            " c.thumb_path AS clip_thumb,"
+            " c.thumb_vertical_path AS clip_thumb_vertical, c.caption AS clip_caption,"
             " c.title AS clip_title, c.yt_title AS clip_yt_title,"
             " c.yt_description AS clip_yt_description, c.episode_id"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"

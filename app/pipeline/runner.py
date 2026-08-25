@@ -24,6 +24,15 @@ def _set(episode_id: int, status: str, progress: float, **extra: Any) -> None:
     log.info("[ep %s] %s (%.0f%%)", episode_id, status, progress * 100)
 
 
+def _burn_progress(fracao: float) -> float:
+    """Mapeia o andamento do ffmpeg (0..1) na faixa que a queima ocupa na barra.
+
+    A etapa comeca em 10% e para em 99%: o 100% e do _set final, depois de gravar
+    os caminhos — a barra nao pode cravar 'pronto' antes disso.
+    """
+    return 0.1 + 0.89 * max(0.0, min(1.0, fracao))
+
+
 def _render_variants(
     episode_id: int,
     clip_id: int,
@@ -56,6 +65,13 @@ def _render_variants(
         thumb = clips.make_thumbnail(video_path, clip, clip_dir / f"{nome}.jpg")
         if thumb is not None:
             fields["thumb_path"] = str(thumb)
+        # A capa vertical e a que aparece no Reels/TikTok/Short; a 16:9 serve para
+        # o YouTube horizontal. Sao enquadramentos diferentes do mesmo frame.
+        thumb_v = clips.make_thumbnail(
+            video_path, clip, clip_dir / f"{nome}_vertical.jpg", vertical=True
+        )
+        if thumb_v is not None:
+            fields["thumb_vertical_path"] = str(thumb_v)
 
     db.update_clip(clip_id, **fields)
 
@@ -149,7 +165,12 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         paths["ass"] = str(ass_path)
 
         if settings.burn_full_episode:
-            burned = subtitles.burn(video_path, ass_path, work_dir / "episodio_legendado.mp4")
+            # A queima dentro do fluxo ocupa a faixa 72%-78% da barra do episodio.
+            burned = subtitles.burn(
+                video_path, ass_path, work_dir / "episodio_legendado.mp4",
+                duration=info.get("duration"),
+                on_progress=lambda f: _set(episode_id, "subtitling", 0.72 + 0.06 * f),
+            )
             paths["episode_burned"] = str(burned)
         _set(episode_id, "subtitling", 0.78, paths=paths)
 
@@ -230,7 +251,11 @@ def burn_episode(episode_id: int) -> Path:
 
     _set(episode_id, "burning", 0.1)
     ass_path = subtitles.write_ass(translated, work_dir / "legenda_ptbr.ass")
-    saida = subtitles.burn(video, ass_path, work_dir / "episodio_legendado.mp4")
+    saida = subtitles.burn(
+        video, ass_path, work_dir / "episodio_legendado.mp4",
+        duration=episode.get("duration"),
+        on_progress=lambda f: _set(episode_id, "burning", _burn_progress(f)),
+    )
 
     paths["ass"] = str(ass_path)
     paths["episode_burned"] = str(saida)

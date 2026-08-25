@@ -143,7 +143,11 @@
         {% if clip.path_wide %} · <span title="tem versão horizontal 16:9">16:9 ✓</span>{% endif %}
         {% if clip.thumb_path %}
         {% set tnome = clip.thumb_path.split('\\')[-1].split('/')[-1] %}
-        · <a href="/media/{{ media_sig(tnome) }}/{{ tnome }}" target="_blank">thumb</a>
+        · <a href="/media/{{ media_sig(tnome) }}/{{ tnome }}" target="_blank">thumb 16:9</a>
+        {% endif %}
+        {% if clip.thumb_vertical_path %}
+        {% set tvnome = clip.thumb_vertical_path.split('\\')[-1].split('/')[-1] %}
+        · <a href="/media/{{ media_sig(tvnome) }}/{{ tvnome }}" target="_blank">thumb 9:16</a>
         {% endif %}
       </p>
       {% if clip.caption %}

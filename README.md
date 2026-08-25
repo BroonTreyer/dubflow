@@ -114,7 +114,11 @@ terceiro. O flag mantém o caminho legítimo como o padrão sem travar seu teste
 | `TRANSLATE_MODEL` | `claude-opus-5` | Modelo da tradução |
 | `TRANSLATE_EFFORT` | `medium` | Profundidade de raciocínio |
 | `USE_BATCH_API` | `false` | Metade do preço, sem garantia de latência |
-| `CLIPS_PER_EPISODE` | `5` | Quantos cortes por episódio |
+| `CLIPS_PER_HOUR` | `20` | Cortes por hora de episódio (2h ≈ 40 cortes) |
+| `CLIPS_PER_EPISODE` | `5` | Piso: mínimo de cortes, para vídeo curto |
+| `CLIPS_MAX` | `80` | Teto de cortes por episódio |
+| `CLIP_WINDOW_MINUTES` | `20` | Tamanho da janela de análise na seleção |
+| `CLIP_SCAN_MODEL` | `claude-haiku-4-5-20251001` | Modelo que reconhece o gênero do vídeo |
 | `CLIP_REFRAME` | `face` | Enquadramento 9:16: `face` / `center` / `pad` (legado) |
 | `CLIP_KARAOKE` | `true` | Legenda karaokê (palavra destacada no tempo da fala) |
 | `CLIP_RENDER_WIDE` | `true` | Renderiza também a versão 16:9 (YouTube horizontal) |

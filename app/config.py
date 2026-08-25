@@ -56,10 +56,22 @@ class Settings:
     translate_model: str = os.getenv("TRANSLATE_MODEL", "claude-opus-5")
     translate_effort: str = os.getenv("TRANSLATE_EFFORT", "medium")
     clip_model: str = os.getenv("CLIP_MODEL", "claude-opus-5")
+    # Modelo do passe de reconhecimento (genero/publico do episodio). E uma
+    # leitura rasa sobre uma amostra, entao roda no Haiku: barato e suficiente.
+    clip_scan_model: str = os.getenv("CLIP_SCAN_MODEL", "claude-haiku-4-5-20251001")
     use_batch_api: bool = _bool("USE_BATCH_API", False)
 
     # --- cortes ---
+    # A cota e proporcional a duracao: um episodio de 2h nao pode receber a mesma
+    # cota de um de 15 min. CLIPS_PER_EPISODE virou o piso (video curto ainda
+    # rende esse minimo) e CLIPS_MAX o teto de seguranca do render.
+    clips_per_hour: int = _int("CLIPS_PER_HOUR", 20)
     clips_per_episode: int = _int("CLIPS_PER_EPISODE", 5)
+    clips_max: int = _int("CLIPS_MAX", 80)
+    # Tamanho da janela de analise: o modelo escolhe os cortes olhando um trecho
+    # por vez, em vez de varrer 2h de uma so tacada (a atencao se dilui e a
+    # selecao piora). Janelas rodam em paralelo.
+    clip_window_minutes: int = _int("CLIP_WINDOW_MINUTES", 20)
     clip_min_seconds: int = _int("CLIP_MIN_SECONDS", 25)
     clip_max_seconds: int = _int("CLIP_MAX_SECONDS", 75)
     # Enquadramento 9:16: face (recorta focando no rosto) | center | pad (legado).

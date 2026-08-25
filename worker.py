@@ -84,7 +84,12 @@ def run_publish_queue() -> bool:
         caption = post["clip_yt_description"]
     else:
         caption = post.get("clip_caption") or ""
-    thumb = post.get("clip_thumb")
+    # A capa acompanha a orientacao do post: um Short publicado com a capa 16:9
+    # aparece com barras. Cai na 16:9 se a vertical nao existir (corte antigo).
+    if orientation == "horizontal":
+        thumb = post.get("clip_thumb")
+    else:
+        thumb = post.get("clip_thumb_vertical") or post.get("clip_thumb")
     thumb_path = Path(thumb) if thumb else None
     log.info("publicando post %s em %s/%s (tentativa %d)",
              post["id"], platform, orientation, attempts)

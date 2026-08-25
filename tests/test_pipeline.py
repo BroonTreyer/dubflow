@@ -106,12 +106,52 @@ def test_clip_sanitize() -> None:
     ]
     out = clips._sanitize(raw, segs)
     titles = [c["title"] for c in out]
-    check("descarta sobreposto e curto", titles == ["A", "B"], titles)
-    check("carrega metadados de SEO (yt_title/yt_description)",
-          out[0].get("yt_title") == "Titulo YT A"
-          and out[0].get("yt_description") == "descricao para busca #tag", out[0])
+    # Na sobreposicao quem ganha e o maior score, nao quem comeca antes: os cortes
+    # chegam de janelas diferentes, entao a ordem do episodio nao vale como criterio.
+    check("na sobreposicao vence o de maior score", titles == ["sobreposto", "B"], titles)
+    check("descarta o curto demais", "curto" not in titles, titles)
     check("ordenado por tempo", out == sorted(out, key=lambda c: c["start"]))
-    check("snap para fronteira de fala", abs(out[0]["start"] - (10.0 - 0.25)) < 0.01, out[0]["start"])
+    check("snap para fronteira de fala", abs(out[1]["start"] - (100.0 - 0.25)) < 0.01, out[1]["start"])
+
+    # Sem disputa, os metadados de SEO precisam sobreviver ao saneamento.
+    solo = clips._sanitize([raw[0]], segs)
+    check("carrega metadados de SEO (yt_title/yt_description)",
+          solo[0].get("yt_title") == "Titulo YT A"
+          and solo[0].get("yt_description") == "descricao para busca #tag", solo[0])
+
+    # Teto: mantem os melhores, nao os primeiros.
+    limitado = clips._sanitize(raw, segs, 1)
+    check("teto mantem o de maior score", [c["title"] for c in limitado] == ["sobreposto"], limitado)
+
+
+def test_clip_target_count() -> None:
+    print("cortes / cota proporcional a duracao")
+    from app.config import settings
+    por_hora, piso, teto = settings.clips_per_hour, settings.clips_per_episode, settings.clips_max
+
+    duas_horas = clips.target_count(2 * 3600)
+    check("2h rende ~2x a cota horaria", duas_horas == min(2 * por_hora, teto), duas_horas)
+    check("video longo rende mais que curto", clips.target_count(8330) > clips.target_count(918))
+    check("video curto respeita o piso", clips.target_count(120) >= min(piso, teto),
+          clips.target_count(120))
+    check("nunca passa do teto", clips.target_count(50 * 3600) == teto, clips.target_count(50 * 3600))
+
+
+def test_clip_windows() -> None:
+    print("cortes / janelas de analise")
+    # 2h de fala em segmentos de 10s.
+    segs = [{"start": i * 10.0, "end": i * 10.0 + 9.0, "text": f"fala {i}"} for i in range(720)]
+    janelas = clips._windows(segs, 40)
+    check("fatia 2h em varias janelas", len(janelas) > 1, len(janelas))
+    check("soma das cotas cobre o alvo", sum(c for _, c in janelas) >= 40,
+          sum(c for _, c in janelas))
+    todos = [s for bloco, _ in janelas for s in bloco]
+    check("nao perde nem duplica segmento", len(todos) == len(segs), (len(todos), len(segs)))
+    check("janelas em ordem e sem buraco",
+          [s["start"] for s in todos] == [s["start"] for s in segs])
+
+    curto = clips._windows(segs[:30], 5)
+    check("video curto fica em uma janela so", len(curto) == 1, len(curto))
 
 
 def test_clip_segments() -> None:
@@ -344,6 +384,161 @@ def test_reframe_focus() -> None:
     check("foco entra no filtro", "0.8300" in face, face)
     check("pad continua disponivel como legado", "overlay" in clips._reframe_filter("pad", 0.5, ass))
 
+    # A capa vertical precisa do MESMO enquadramento do corte: se ela usasse o
+    # recorte 16:9, a capa do Reels sairia com a cabeca cortada.
+    cadeia = clips._vertical_chain("face", 0.83)
+    check("capa vertical usa o mesmo foco do corte", "0.8300" in cadeia, cadeia)
+    check("capa vertical sai 9:16", "crop=1080:1920" in cadeia, cadeia)
+    check("cadeia termina no rotulo reusavel", cadeia.endswith("[framed]"), cadeia[-40:])
+    check("o filtro do corte reusa a cadeia",
+          clips._vertical_chain("face", 0.83) in clips._reframe_filter("face", 0.83, ass))
+
+
+def test_reframe_two_people() -> None:
+    """Com duas pessoas a janela tem que escolher UMA, nao ficar no vazio entre elas."""
+    print("cortes / duas pessoas no quadro")
+
+    W, H = 1920, 1080          # a janela 9:16 cobre ~31,6% da largura
+    r = clips._window_ratio(W, H)
+    check("janela 9:16 e estreita em fonte 16:9", 0.30 < r < 0.33, r)
+
+    # Ela a esquerda (rosto grande, falando), ele a direita (de costas, parado).
+    esquerda = (200.0, 300.0, 260.0, 260.0)   # x=200..460
+    direita = (1500.0, 300.0, 300.0, 300.0)   # x=1500..1800
+    boxes = [esquerda, direita]
+
+    # A media ponderada dos dois cairia no meio do quadro e cortaria os dois — era
+    # exatamente o bug. O grupo escolhido tem que ser um rosto so.
+    grupo = clips._pick_group(boxes, [260 * 260 * 3.0, 300 * 300 * 1.0], W, H)
+    x0, x1 = grupo
+    check("escolhe um rosto, nao a media", (x1 - x0) < r, (x0, x1))
+    check("escolhe quem esta falando", x1 < 0.5, (x0, x1))
+
+    foco = clips._focus_for_span(x0, x1, W, H)
+    jan0 = foco * (1 - r)
+    jan1 = jan0 + r
+    check("o rosto escolhido cabe inteiro na janela", jan0 <= x0 and x1 <= jan1,
+          (jan0, x0, x1, jan1))
+
+    # Sem o bonus de fala, quem manda e o rosto maior — e ainda assim um so.
+    g2 = clips._pick_group(boxes, [260 * 260, 300 * 300], W, H)
+    check("sem fala, vence o rosto maior", g2[0] > 0.5, g2)
+
+    # Dois rostos proximos cabem juntos: nao ha por que descartar um.
+    perto = [(800.0, 300.0, 200.0, 200.0), (1050.0, 300.0, 200.0, 200.0)]
+    gp = clips._pick_group(perto, [200 * 200, 200 * 200], W, H)
+    check("rostos proximos ficam juntos", (gp[1] - gp[0]) > 0.2, gp)
+    f2 = clips._focus_for_span(gp[0], gp[1], W, H)
+    check("os dois cabem na janela", f2 * (1 - r) <= gp[0] and gp[1] <= f2 * (1 - r) + r, gp)
+
+    # Rosto colado na borda: a janela trava sem vazar do quadro.
+    borda = clips._focus_for_span(0.0, 0.05, W, H)
+    check("rosto na borda nao vaza", 0.0 <= borda <= 1.0, borda)
+
+
+def test_reframe_track() -> None:
+    """A camera segue quem fala, mas sem tremer: histerese e tempo minimo."""
+    print("cortes / trilha de foco no tempo")
+
+    W, H = 1920, 1080
+    # Alguem a esquerda por 6 s, depois alguem a direita por 6 s.
+    amostras = []
+    for i in range(24):
+        t = i / clips.FOCUS_FPS
+        if t < 6:
+            amostras.append((t, 0.10, 0.24))
+        else:
+            amostras.append((t, 0.76, 0.90))
+    trilha = clips._build_track(amostras, W, H, 12.0)
+    check("troca de enquadramento acontece", len(trilha) == 2, trilha)
+    check("comeca no tempo zero", trilha[0][0] == 0.0, trilha)
+    check("segue quem fala (esquerda -> direita)", trilha[1][1] > trilha[0][1], trilha)
+    check("a troca cai perto dos 6 s", 5.0 <= trilha[1][0] <= 7.5, trilha)
+
+    # Deteccao que pisca por meio segundo nao pode virar corte de camera.
+    ruido = []
+    for i in range(24):
+        t = i / clips.FOCUS_FPS
+        pisca = (t, 0.80, 0.94) if i == 10 else (t, 0.10, 0.24)
+        ruido.append(pisca)
+    check("ruido nao vira troca", len(clips._build_track(ruido, W, H, 12.0)) == 1,
+          clips._build_track(ruido, W, H, 12.0))
+
+    # Alvo parado = uma posicao so.
+    parado = [(i / clips.FOCUS_FPS, 0.40, 0.54) for i in range(24)]
+    check("cena estavel fica com um segmento", len(clips._build_track(parado, W, H, 12.0)) == 1)
+
+
+def test_focus_expression() -> None:
+    """A trilha vira expressao valida de ffmpeg, e a capa le o foco do instante."""
+    print("cortes / expressao de foco")
+
+    check("foco constante vira numero", clips._focus_expr(0.42) == "0.4200")
+    check("trilha de um item vira numero", clips._focus_expr([(0.0, 0.31)]) == "0.3100")
+
+    expr = clips._focus_expr([(0.0, 0.20), (6.0, 0.80)])
+    check("trilha de dois vira if(lt(t...))", expr.startswith("if(lt(t") , expr)
+    check("virgulas escapadas para o filtro", "\\," in expr and "," not in expr.replace("\\,", ""),
+          expr)
+    check("contem os dois focos", "0.2000" in expr and "0.8000" in expr, expr)
+
+    tres = clips._focus_expr([(0.0, 0.2), (5.0, 0.5), (9.0, 0.9)])
+    check("tres segmentos aninham dois ifs", tres.count("if(") == 2, tres)
+
+    # O valor em cada instante tem que bater com o segmento vigente.
+    t = [(0.0, 0.2), (5.0, 0.5), (9.0, 0.9)]
+    check("antes do primeiro corte", clips._focus_at(t, 1.0) == 0.2)
+    check("no meio", clips._focus_at(t, 6.0) == 0.5)
+    check("depois do ultimo", clips._focus_at(t, 20.0) == 0.9)
+    check("constante ignora o tempo", clips._focus_at(0.33, 7.0) == 0.33)
+
+    # A cadeia do corte aceita trilha; a expressao entra dentro do crop.
+    cadeia = clips._vertical_chain("face", t)
+    check("cadeia usa a expressao no crop", "crop=1080:1920:x='(in_w-out_w)*(if(" in cadeia,
+          cadeia[:90])
+
+
+def test_burn_progress() -> None:
+    """A barra da queima tem que andar de verdade — 10% parado por 1h e igual a travado."""
+    print("queima / progresso real")
+    from app.pipeline import runner
+
+    check("comeca em 10%", abs(runner._burn_progress(0.0) - 0.10) < 1e-9)
+    check("meio da queima cai no meio da faixa", 0.5 < runner._burn_progress(0.5) < 0.6,
+          runner._burn_progress(0.5))
+    check("nao crava 100% antes do fim", runner._burn_progress(1.0) < 1.0,
+          runner._burn_progress(1.0))
+    check("sempre crescente",
+          runner._burn_progress(0.2) < runner._burn_progress(0.6) < runner._burn_progress(0.9))
+    check("valor fora da faixa nao quebra",
+          runner._burn_progress(-1) == 0.1 and runner._burn_progress(2) < 1.0)
+
+    # O parser le o fluxo do -progress do ffmpeg (chave=valor, uma por linha).
+    saida = (
+        "frame=120\nout_time_us=N/A\nprogress=continue\n"
+        "frame=240\nout_time_us=10000000\nprogress=continue\n"    # 10 s
+        "frame=480\nout_time_us=50000000\nprogress=continue\n"    # 50 s
+        "out_time_us=100000000\nprogress=end\n"                   # 100 s
+    )
+    vistos = list(subtitles.progress_fractions(saida.splitlines(), 100.0))
+    check("ignora o N/A do inicio", len(vistos) == 3, vistos)
+    check("fracao bate com o tempo codificado",
+          [round(v, 2) for v in vistos] == [0.1, 0.5, 1.0], vistos)
+    check("chega a 100% no fim", vistos[-1] == 1.0, vistos)
+
+    # Atualizacao a cada linha encheria o banco: so reporta a cada 0,5 ponto.
+    denso = [f"out_time_us={i * 100_000}" for i in range(1, 400)]
+    poucos = list(subtitles.progress_fractions(denso, 100.0))
+    check("nao reporta a cada frame", len(poucos) < 100, len(poucos))
+    check("ainda assim cobre a queima inteira", poucos[-1] > 0.35, poucos[-1])
+
+    # Sem duracao conhecida nao da para calcular fracao — e nao pode explodir.
+    check("sem duracao nao emite nada", list(subtitles.progress_fractions(saida.splitlines(), None)) == [])
+    check("duracao zero nao divide por zero",
+          list(subtitles.progress_fractions(saida.splitlines(), 0)) == [])
+    check("lixo na linha e ignorado",
+          list(subtitles.progress_fractions(["frame=1", "bitrate=N/A", "progress=end"], 100.0)) == [])
+
 
 def test_youtube_metadata() -> None:
     """O worker so passa a caption; o publisher deriva titulo/descricao/tags dela."""
@@ -408,6 +603,8 @@ def main() -> int:
     test_budget()
     test_blocks()
     test_clip_sanitize()
+    test_clip_target_count()
+    test_clip_windows()
     test_clip_segments()
     test_ass_escape()
     test_translation_fallback()
@@ -417,6 +614,10 @@ def main() -> int:
     test_resegment()
     test_karaoke(tmp)
     test_reframe_focus()
+    test_reframe_two_people()
+    test_reframe_track()
+    test_focus_expression()
+    test_burn_progress()
     test_youtube_metadata()
 
     print()
