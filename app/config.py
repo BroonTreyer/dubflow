@@ -54,6 +54,11 @@ class Settings:
     whisper_model: str = os.getenv("WHISPER_MODEL", "large-v3")
     whisper_device: str = os.getenv("WHISPER_DEVICE", "cuda")
     whisper_compute: str = os.getenv("WHISPER_COMPUTE", "float16")
+    # Cookies do navegador para o yt-dlp. Depois de uma sequencia de downloads o
+    # YouTube passa a exigir "Sign in to confirm you're not a bot" para esta
+    # maquina, e ai nenhuma extracao passa sem sessao. Valor: chrome, firefox,
+    # edge, brave... Vazio = sem cookies (funciona ate o bloqueio aparecer).
+    ytdlp_cookies_browser: str = os.getenv("YTDLP_COOKIES_BROWSER", "")
     source_lang: str = os.getenv("SOURCE_LANG", "")  # "" = autodetect
     target_lang: str = os.getenv("TARGET_LANG", "pt-BR")
 
