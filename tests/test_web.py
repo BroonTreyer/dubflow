@@ -318,6 +318,10 @@ def main() -> int:
     import worker as _worker
     from app.publishers import telegram as _tg
     _os.environ["TELEGRAM_VIP_CHAT_ID"] = "-100777666"
+    # O bot token vem do .env da MAQUINA, e numa maquina sem Telegram configurado
+    # ele esta vazio — o teste passava so por sorte de ambiente. Fixa aqui para o
+    # bloco medir o codigo do VIP, nao a configuracao local.
+    _os.environ["TELEGRAM_BOT_TOKEN"] = _os.environ.get("TELEGRAM_BOT_TOKEN") or "token-de-teste"
     _vip_calls: list = []
     _orig_post = _tg.requests.post
 
