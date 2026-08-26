@@ -38,6 +38,12 @@ def probe(url: str) -> dict[str, Any]:
         "description": (info.get("description") or "")[:4000],
         "upload_date": info.get("upload_date"),
         "language": info.get("language"),
+        # Atribuicao da fonte. Creditar canal e video original e o que separa
+        # "corte com credito" de "reupload" aos olhos de quem denuncia — e do
+        # sistema de conteudo reaproveitado da plataforma. No YouTube atual o
+        # uploader_id ja vem como @handle.
+        "uploader_id": info.get("uploader_id"),
+        "channel_url": info.get("channel_url") or info.get("uploader_url"),
     }
 
 

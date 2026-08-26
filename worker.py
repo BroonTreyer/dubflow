@@ -8,13 +8,14 @@ CPU/GPU por minutos — dentro do servidor web isso travaria o painel.
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import db, publishers, sales
+from app import attribution, db, publishers, sales
 from app.config import configure_logging
 from app.pipeline import archive, runner
 
@@ -84,6 +85,15 @@ def run_publish_queue() -> bool:
         caption = post["clip_yt_description"]
     else:
         caption = post.get("clip_caption") or ""
+
+    # Credito da fonte no fim da descricao, em TODA plataforma: link do episodio
+    # completo e @ do canal original. E o que apresenta o video como corte em vez
+    # de reupload — a diferenca que pesa quando alguem denuncia.
+    caption = attribution.apply(caption, {
+        "source_url": post.get("ep_source_url"),
+        "channel": post.get("ep_channel"),
+        "meta": json.loads(post.get("ep_meta") or "{}"),
+    })
     # A capa acompanha a orientacao do post: um Short publicado com a capa 16:9
     # aparece com barras. Cai na 16:9 se a vertical nao existir (corte antigo).
     if orientation == "horizontal":

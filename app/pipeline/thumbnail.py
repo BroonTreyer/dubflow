@@ -19,6 +19,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from app.config import settings
+
 log = logging.getLogger(__name__)
 
 # Fontes pesadas do Windows, em ordem de preferencia. Impact e a fonte classica de
@@ -55,6 +57,10 @@ SEARCH_RADIUS = 2.5
 # patrocinio de outro canal nas bordas — INSET descarta essa faixa antes de tudo.
 PANEL_BORDER = (255, 216, 0)   # moldura da capa e do painel do apresentador
 BADGE_BG = (208, 20, 34)       # selo curto ("TENSAO RECORDE")
+
+# Altura do bloco do apresentador na 9:16. 0.44 espelha a proporcao que funcionou
+# no 16:9 (coluna de 42% da largura): duas regioes claras, separadas por um risco.
+VERTICAL_PANEL_FRAC = 0.44
 
 INSET = 0.055        # fracao de cada borda que nunca entra na capa
 FACE_RATIO = 0.55    # altura do rosto como fracao da altura da capa
@@ -435,17 +441,23 @@ def _fit_cover(img: Any, largura: int, altura: int) -> Any:
     return img.crop((e, t, e + largura, t + altura))
 
 
-def compose_composite(frame_path: Path, art_path: Path | None, texto: str,
+def compose_composite(frame_path: Path | None, art_path: Path | None, texto: str,
                       output_path: Path, badge: str = "",
-                      size: tuple[int, int] = (1280, 720)) -> Path | None:
-    """Capa em camadas: imagem tematica, apresentador em coluna, texto grande.
+                      size: tuple[int, int] = (1280, 720),
+                      presenter: bool = True) -> Path | None:
+    """Capa: imagem gerada por IA ao fundo, gancho estampado, apresentador opcional.
 
-    Ordem importa. O escurecimento que garante leitura do texto e aplicado SO na
-    coluna do texto e ANTES do painel entrar — quando ele passava por cima de tudo
-    em largura total, cortava o apresentador com uma faixa preta no meio.
+    A imagem vem do que se DIZ no trecho (a IA escreve o prompt lendo a
+    transcricao), nao de um frame do video — o video e podcast e todo frame e a
+    mesma pessoa na mesma cadeira.
 
-    O painel vai colado na borda direita e em altura cheia. Painel flutuando com
-    folga em volta parece descuido; colado parece decisao.
+    Serve as duas orientacoes:
+      16:9  apresentador em coluna colada a direita, texto na coluna esquerda;
+      9:16  apresentador em faixa no topo, texto no tercao de baixo — que e onde
+            o dedo nao cobre e o app nao poe interface.
+
+    `presenter=False` usa so a arte, em tela cheia. Ordem importa: o escurecimento
+    do texto e aplicado ANTES do painel, senao corta o rosto com uma faixa preta.
     """
     font_file = _font_path()
     if font_file is None:
@@ -456,74 +468,108 @@ def compose_composite(frame_path: Path, art_path: Path | None, texto: str,
         return None
 
     largura, altura = size
-    borda = max(6, int(altura * 0.014))
+    vertical = altura > largura
+    borda = max(6, int(min(largura, altura) * 0.014))
 
-    frame = Image.open(frame_path).convert("RGB")
-    rosto = _biggest_face(frame)
-    tem_arte = art_path is not None and art_path.exists()
+    frame = None
+    if presenter and frame_path is not None and Path(frame_path).exists():
+        frame = Image.open(frame_path).convert("RGB")
 
-    if tem_arte:
-        # Coluna do apresentador na direita, altura cheia. O resto e a arte.
-        pw = int(largura * 0.42)
-        ph = altura
+    if art_path is not None and Path(art_path).exists():
         base = _fit_cover(Image.open(art_path).convert("RGB"), largura, altura)
-        col_texto = largura - pw
+    elif frame is not None:
+        base = _fit_cover(frame, largura, altura)   # degradacao: sem arte, usa o video
+        frame = None
     else:
-        pw, ph = 0, 0
-        base = _fit_cover(frame, largura, altura)
-        col_texto = int(largura * 0.94)
+        return None
 
     base = ImageEnhance.Contrast(base).enhance(1.14)
     base = ImageEnhance.Color(base).enhance(1.28)
 
+    # Geometria do painel do apresentador e da coluna de texto.
+    usa_painel = frame is not None
+    if usa_painel and vertical:
+        # Retrato nao comporta coluna lateral: a mesma ideia vira bloco no topo,
+        # com o risco amarelo fazendo o papel do divisor vertical do 16:9.
+        pw, ph = largura, int(altura * VERTICAL_PANEL_FRAC)
+        col_texto = largura
+    elif usa_painel:
+        pw, ph = int(largura * 0.42), altura      # coluna na direita
+        col_texto = largura - pw
+    else:
+        pw = ph = 0
+        col_texto = largura
+
     palavras = parse_highlight(texto)
     draw = ImageDraw.Draw(base)
+    margem = int(largura * (0.055 if vertical else 0.035))
+    fonte = linhas = alturas = None
+    entrelinha = bloco = 0
 
-    margem = int(largura * 0.035)
-    texto_largura = col_texto - margem * 2
-    fonte = linhas = None
-    bloco = 0
     if palavras:
-        # Texto grande de verdade: e ele que carrega a capa no tamanho de miniatura.
-        fonte, linhas = _fit_lines(draw, palavras, texto_largura,
-                                   int(altura * 0.20), font_file, max_linhas=4)
-        alturas = [draw.textbbox((0, 0), "Ay", font=fonte)[3] for _ in linhas]
-        entrelinha = int(fonte.size * 0.06)   # leading apertado, como capa de canal
-        bloco = sum(alturas) + entrelinha * (len(linhas) - 1)
+        # Teto de altura do texto. Na 9:16 com apresentador, o texto vive SO no
+        # bloco da arte — e ainda cede a faixa do selo, senao ele acaba impresso
+        # em cima do rosto (que foi o que aconteceu na primeira versao).
+        reserva_selo = int(altura * 0.075) if badge else 0
+        rodape = int(altura * (0.09 if vertical else 0.055))
+        if usa_painel and vertical:
+            teto_bloco = altura - ph - reserva_selo - rodape - int(altura * 0.03)
+        else:
+            teto_bloco = altura - reserva_selo - rodape - int(altura * 0.06)
 
-        # Degrade escuro subindo do rodape, restrito a coluna do texto: sem borda
-        # dura e sem invadir o painel.
-        topo_scrim = max(0, altura - bloco - int(altura * 0.26))
+        corpo = int(altura * (0.098 if vertical else 0.20))
+        for _ in range(8):   # encolhe ate caber; 8 passos chegam em qualquer caso
+            fonte, linhas = _fit_lines(draw, palavras, col_texto - margem * 2, corpo,
+                                       font_file, max_linhas=4)
+            alturas = [draw.textbbox((0, 0), "Ay", font=fonte)[3] for _ in linhas]
+            entrelinha = int(fonte.size * 0.06)
+            bloco = sum(alturas) + entrelinha * (len(linhas) - 1)
+            if bloco <= teto_bloco or corpo <= 28:
+                break
+            corpo = int(corpo * 0.88)
+
+        # Degrade escuro subindo do rodape, restrito a coluna do texto.
+        folga = int(altura * (0.16 if vertical else 0.26))
+        topo_scrim = max(0, altura - bloco - folga)
+        if usa_painel and vertical:
+            # O degrade comeca abaixo do bloco do apresentador, nunca por cima dele.
+            topo_scrim = max(topo_scrim, int(altura * VERTICAL_PANEL_FRAC))
         h_scrim = altura - topo_scrim
         mascara = Image.new("L", (col_texto, h_scrim), 0)
         md = ImageDraw.Draw(mascara)
         for i in range(h_scrim):
-            md.line([(0, i), (col_texto, i)], fill=int(235 * (i / max(1, h_scrim - 1)) ** 1.35))
+            md.line([(0, i), (col_texto, i)],
+                    fill=int(235 * (i / max(1, h_scrim - 1)) ** 1.35))
         escuro = Image.new("RGB", (col_texto, h_scrim), BLACK)
         recorte = base.crop((0, topo_scrim, col_texto, altura))
         base.paste(Image.composite(escuro, recorte, mascara), (0, topo_scrim))
 
-    if tem_arte:
-        cx, cy, cw, ch = crop_box(frame.width, frame.height, rosto, pw / ph)
+    if usa_painel:
+        cx, cy, cw, ch = crop_box(frame.width, frame.height, _biggest_face(frame), pw / ph)
         painel = _fit_cover(frame.crop((cx, cy, cx + cw, cy + ch)), pw, ph)
         painel = ImageEnhance.Contrast(painel).enhance(1.12)
         painel = ImageEnhance.Color(painel).enhance(1.15)
-        base.paste(painel, (largura - pw, 0))
-        # Risco vertical separando a coluna da arte: sem ele os dois se misturam.
-        ImageDraw.Draw(base).rectangle(
-            [largura - pw - borda, 0, largura - pw - 1, altura], fill=PANEL_BORDER
-        )
+        # O frame do video e mais macio que a arte gerada; sem isto o painel
+        # parece desfocado ao lado dela.
+        painel = ImageEnhance.Sharpness(painel).enhance(1.6)
+        if vertical:
+            base.paste(painel, (0, 0))
+            ImageDraw.Draw(base).rectangle([0, ph, largura, ph + borda], fill=PANEL_BORDER)
+        else:
+            base.paste(painel, (largura - pw, 0))
+            ImageDraw.Draw(base).rectangle(
+                [largura - pw - borda, 0, largura - pw - 1, altura], fill=PANEL_BORDER
+            )
 
     draw = ImageDraw.Draw(base)
-
     if palavras:
         fundo = _region_color(base, altura - bloco - borda, altura - borda)
         cor_texto, cor_destaque, cor_contorno = pick_colors(fundo)
 
-        y = altura - bloco - int(altura * 0.055)
+        y = altura - bloco - rodape
         if badge:
             _draw_badge(base, draw, badge.upper()[:28], font_file, margem,
-                        y - int(altura * 0.025), altura)
+                        y - int(altura * 0.018), altura)
 
         contorno = max(5, int(fonte.size * 0.11))
         for linha, alt in zip(linhas, alturas):
@@ -763,16 +809,19 @@ def make(video_path: Path, clip: dict[str, Any], output_path: Path,
 
         size = (1080, 1920) if vertical else (1280, 720)
         try:
-            # No 16:9 do YouTube vale a capa em camadas (imagem tematica + painel do
-            # apresentador + bloco de texto). No 9:16 nao: o feed ja mostra o video
-            # em tela cheia e a capa disputa espaco com a interface do app.
-            if not vertical:
-                arte = imagegen.generate(clip.get("thumb_image_prompt") or "",
-                                         art_dir or tmp)
-                return compose_composite(frame, arte, texto, output_path,
-                                         badge=(clip.get("thumb_badge") or "").strip(),
-                                         size=size)
-            return compose(frame, texto, output_path, size)
+            # A capa e sempre a imagem gerada pela IA a partir do que se diz no
+            # trecho — nas duas orientacoes. O 9:16 pede arte em retrato: gerar
+            # paisagem e recortar jogaria fora metade do enquadramento composto.
+            arte = imagegen.generate(
+                clip.get("thumb_image_prompt") or "",
+                art_dir or tmp,
+                size=(settings.thumb_image_size_vertical if vertical
+                      else settings.thumb_image_size),
+            )
+            return compose_composite(frame, arte, texto, output_path,
+                                     badge=(clip.get("thumb_badge") or "").strip(),
+                                     size=size,
+                                     presenter=settings.thumb_presenter)
         except Exception as exc:  # noqa: BLE001 — capa e um extra, nunca reprova o corte
             log.warning("composicao da capa falhou (%s)", exc)
             return None

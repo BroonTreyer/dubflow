@@ -80,6 +80,23 @@ class Settings:
     thumb_generate_image: bool = _bool("THUMB_GENERATE_IMAGE", True)
     thumb_image_model: str = os.getenv("THUMB_IMAGE_MODEL", "gpt-image-2")
     thumb_image_size: str = os.getenv("THUMB_IMAGE_SIZE", "1536x1024")
+    # A capa 9:16 pede imagem em retrato: gerar paisagem e recortar joga fora
+    # metade do enquadramento que o modelo compos.
+    thumb_image_size_vertical: str = os.getenv("THUMB_IMAGE_SIZE_VERTICAL", "1024x1536")
+    # Sobrepor o apresentador (recortado do video) sobre a arte gerada. Desligado,
+    # a capa e so a imagem da IA com o gancho estampado.
+    thumb_presenter: bool = _bool("THUMB_PRESENTER", True)
+
+    # --- credito da fonte ---
+    # Link do episodio original e @ do canal no fim de toda descricao/legenda.
+    # Um corte sem credito e indistinguivel de reupload para quem denuncia.
+    attribution_enabled: bool = _bool("ATTRIBUTION_ENABLED", True)
+    attribution_header: str = os.getenv("ATTRIBUTION_HEADER", "-- Credito --")
+    attribution_footer: str = os.getenv(
+        "ATTRIBUTION_FOOTER",
+        "Corte com legendas em pt-BR. Todos os direitos do conteudo original "
+        "pertencem ao canal acima.",
+    )
 
     # --- distribuicao entre provedores de IA ---
     # Ordem de preferencia. O primeiro com chave e o preferido; os demais cobrem
@@ -108,7 +125,7 @@ class Settings:
     # selecao piora). Janelas rodam em paralelo.
     clip_window_minutes: int = _int("CLIP_WINDOW_MINUTES", 20)
     clip_min_seconds: int = _int("CLIP_MIN_SECONDS", 25)
-    clip_max_seconds: int = _int("CLIP_MAX_SECONDS", 75)
+    clip_max_seconds: int = _int("CLIP_MAX_SECONDS", 60)
     # Enquadramento 9:16: face (recorta focando no rosto) | center | pad (legado).
     clip_reframe: str = os.getenv("CLIP_REFRAME", "face")
     # Legenda karaoke (palavra destacada no tempo da fala) nos cortes verticais.

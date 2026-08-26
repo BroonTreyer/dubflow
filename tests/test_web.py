@@ -587,6 +587,24 @@ def main() -> int:
           ct["thumb_text"])
     check("thumb_time persiste", ct["thumb_time"] == 25.5, ct["thumb_time"])
 
+    # Todo campo do schema de corte tem que sobreviver ao INSERT. Ja aconteceu duas
+    # vezes de um campo novo ser gerado pela IA e o banco guardar NULL em silencio,
+    # porque a lista de colunas do INSERT ficou para tras.
+    campos_capa = {"thumb_text", "thumb_badge", "thumb_image_prompt", "thumb_time"}
+    ep_full = db.create_episode("https://youtu.be/campos", "owned")
+    db.replace_clips(ep_full, [{
+        "start": 0.0, "end": 30.0, "title": "t", "hook": "h", "caption": "c",
+        "yt_title": "y", "yt_description": "d", "score": 8,
+        "thumb_text": "A", "thumb_badge": "B", "thumb_image_prompt": "C",
+        "thumb_time": 12.0,
+    }])
+    guardado = db.list_clips(ep_full)[0]
+    perdidos = [k for k in campos_capa if guardado[k] in (None, "")]
+    check("nenhum campo da capa se perde no INSERT", not perdidos, perdidos)
+
+    # A acao de reselecao precisa estar registrada, senao o painel a recusa.
+    check("reselect_clips e uma acao valida", "reselect_clips" in db.ACTIONS, db.ACTIONS)
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")

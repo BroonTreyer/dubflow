@@ -534,6 +534,125 @@ def test_same_language_passthrough(tmp: pathlib.Path) -> None:
     check("idioma diferente nao pega o atalho", not translate.same_language("tr", "pt-BR"))
 
 
+def test_clip_openings() -> None:
+    """Corte tem que abrir em frase nova. Medido: 46% abriam no meio do raciocinio."""
+    print("cortes / abertura em frase nova")
+
+    check("frase inteira abre bem", clips._abre_bem("Tem um filme do The Rock."))
+    check("minuscula e frase cortada", not clips._abre_bem("e la na Italia tem um"))
+    check("conectivo e muleta", not clips._abre_bem("Entao a galera do sul se prepara"))
+    check("'Mas' nao abre corte", not clips._abre_bem("Mas o que acontece e que"))
+    check("resposta solta nao abre", not clips._abre_bem("absurdo, ne?"))
+    check("vazio nao abre bem", not clips._abre_bem("   "))
+
+    # Fronteiras: inicio depois de ponto final, fim em pontuacao terminal.
+    segs = [
+        {"start": 0.0, "end": 3.0, "text": "Primeira frase completa."},
+        {"start": 3.0, "end": 6.0, "text": "e isso continua sem fechar"},
+        {"start": 6.0, "end": 9.0, "text": "porque emenda de novo."},
+        {"start": 9.0, "end": 12.0, "text": "Agora sim uma frase nova."},
+    ]
+    inicios, fins = clips.speech_boundaries(segs)
+    check("primeiro segmento sempre pode abrir", 0.0 in inicios, inicios)
+    check("segmento que emenda nao vira inicio", 3.0 not in inicios, inicios)
+    check("segmento apos ponto final e com abertura boa entra",
+          9.0 in inicios, inicios)
+    check("so fim de frase vira fim", fins == [3.0, 9.0, 12.0], fins)
+
+    # O reencaixe: inicio VOLTA ate a frase abrir, fim AVANCA ate ela fechar.
+    bruto = [{"start": 4.5, "end": 7.0, "title": "t", "hook": "h", "caption": "c",
+              "score": 9}]
+    # (duracao minima impede aceitar; o que importa aqui e a direcao do encaixe)
+    longos = segs + [{"start": 12.0 + i * 3, "end": 15.0 + i * 3,
+                      "text": f"Frase numero {i}."} for i in range(12)]
+    bruto = [{"start": 4.5, "end": 40.0, "title": "t", "hook": "h", "caption": "c",
+              "score": 9}]
+    out = clips._sanitize(bruto, longos)
+    if out:
+        check("inicio recuou para o comeco da frase", out[0]["start"] <= 4.5,
+              out[0]["start"])
+        check("fim avancou para fechar a frase", out[0]["end"] >= 40.0 - 0.5,
+              out[0]["end"])
+
+
+def test_clip_ranking() -> None:
+    """Com score colapsado em 8-9, o desempate tem que vir de sinal medido."""
+    print("cortes / ranqueamento sem depender do score")
+
+    notas_iguais = [{"score": 9}, {"score": 9}, {"score": 9}, {"score": 8}]
+    check("detecta score sem discriminacao",
+          clips._score_spread(notas_iguais) < 0.6, clips._score_spread(notas_iguais))
+    check("score espalhado nao dispara alerta",
+          clips._score_spread([{"score": 9}, {"score": 6}, {"score": 3}]) > 0.6)
+    check("poucos cortes nao geram julgamento",
+          clips._score_spread([{"score": 9}, {"score": 8}]) is None)
+
+    segs = [{"start": i * 5.0, "end": i * 5.0 + 5.0,
+             "text": "Frase nova completa." if i % 2 == 0 else "e emenda aqui"}
+            for i in range(30)]
+    # Mesmo score: quem abre bem tem que ganhar de quem abre no meio da frase.
+    abre_bem = {"start": 0.0, "end": 40.0, "score": 8}
+    abre_mal = {"start": 5.0, "end": 45.0, "score": 8}
+    check("abertura boa vence empate de score",
+          clips._rank_key(abre_bem, segs) > clips._rank_key(abre_mal, segs))
+
+    # Duracao perto da ideal desempata quando os dois abrem bem.
+    ideal = {"start": 0.0, "end": clips.DURACAO_IDEAL, "score": 8}
+    esticado = {"start": 0.0, "end": clips.DURACAO_IDEAL * 2, "score": 8}
+    check("duracao ideal vence a esticada",
+          clips._rank_key(ideal, segs) > clips._rank_key(esticado, segs))
+
+    # Score alto de verdade ainda manda: o sinal medido desempata, nao substitui.
+    otimo = {"start": 0.0, "end": clips.DURACAO_IDEAL, "score": 10}
+    check("score continua pesando", clips._rank_key(otimo, segs) > clips._rank_key(ideal, segs))
+
+
+def test_attribution() -> None:
+    """Credito da fonte: e o que apresenta o corte como corte, nao como reupload."""
+    print("credito da fonte")
+    from app import attribution
+    from app.config import settings
+
+    ep = {
+        "source_url": "https://www.youtube.com/watch?v=aWfu",
+        "channel": "Cortes do Inteligencia",
+        "meta": {"uploader_id": "@Inteligencia", "channel_url": ""},
+    }
+    bloco = attribution.credit_block(ep)
+    check("cita o canal", "Cortes do Inteligencia" in bloco, bloco)
+    check("leva o @ do canal", "@Inteligencia" in bloco, bloco)
+    check("leva o link do episodio completo", ep["source_url"] in bloco, bloco)
+
+    # Handle: uploader_id moderno e @; o antigo (UC...) nao serve como mencao.
+    check("uploader_id no formato @ vira mencao",
+          attribution.handle({"meta": {"uploader_id": "@canal.x"}}) == "@canal.x")
+    check("id cru de canal nao vira mencao",
+          attribution.handle({"meta": {"uploader_id": "UC123abc"}}) == "")
+    check("extrai o @ da url do canal quando falta o uploader_id",
+          attribution.handle({"meta": {"channel_url": "https://youtube.com/@fonte"}})
+          == "@fonte")
+
+    # O credito vai no FIM: o comeco da descricao e o que aparece no feed.
+    texto = attribution.apply("Gancho do corte.\n#tag", ep)
+    check("credito vai no fim, nao no comeco", texto.startswith("Gancho do corte."), texto[:40])
+    check("credito presente", ep["source_url"] in texto)
+
+    # Republicar/reprocessar nao pode empilhar dois blocos.
+    duplo = attribution.apply(texto, ep)
+    check("nao duplica o credito", duplo.count(ep["source_url"]) == 1,
+          duplo.count(ep["source_url"]))
+
+    # Sem dado de origem, nao monta bloco pela metade.
+    check("sem origem nao inventa credito", attribution.credit_block({}) == "")
+    check("sem origem devolve o texto intacto",
+          attribution.apply("so o texto", {}) == "so o texto")
+
+    antes = settings.attribution_enabled
+    settings.attribution_enabled = False
+    check("desligado no .env nao credita", attribution.apply("x", ep) == "x")
+    settings.attribution_enabled = antes
+
+
 def test_thumb_moment() -> None:
     """A capa tem que sair do momento que importa, nao do frame mais nitido.
 
@@ -669,6 +788,48 @@ def test_thumb_frontality() -> None:
           th.FRONTAL_WEIGHT)
 
 
+def test_thumb_layout() -> None:
+    """As duas orientacoes seguem a mesma gramatica, e o texto nao invade o rosto."""
+    print("capa / layout nas duas orientacoes")
+    import tempfile
+    from PIL import Image
+    from app.pipeline import thumbnail as th
+
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="dubflow_layout_"))
+    arte = tmpdir / "arte.png"
+    Image.new("RGB", (1024, 1536), (40, 30, 25)).save(arte)
+    frame = tmpdir / "frame.jpg"
+    Image.new("RGB", (1920, 1080), (90, 60, 120)).save(frame)
+
+    vert = th.compose_composite(frame, arte, "QUANDO *PARA* DE TREMER, PREOCUPA",
+                                tmpdir / "v.jpg", badge="TENSAO",
+                                size=(1080, 1920))
+    check("gera a capa 9:16", vert is not None and vert.exists())
+    if vert:
+        check("9:16 sai no tamanho certo", Image.open(vert).size == (1080, 1920),
+              Image.open(vert).size)
+
+    horiz = th.compose_composite(frame, arte, "QUANDO *PARA* DE TREMER, PREOCUPA",
+                                 tmpdir / "h.jpg", badge="TENSAO", size=(1280, 720))
+    check("gera a capa 16:9", horiz is not None and horiz.exists())
+
+    # Sem apresentador: a arte sozinha ainda vira capa (THUMB_PRESENTER=false).
+    so_arte = th.compose_composite(frame, arte, "SO A ARTE", tmpdir / "s.jpg",
+                                   size=(1080, 1920), presenter=False)
+    check("sem apresentador ainda gera capa", so_arte is not None and so_arte.exists())
+
+    # Sem arte E sem frame nao ha o que compor — devolve None em vez de explodir.
+    check("sem imagem nenhuma devolve None",
+          th.compose_composite(None, None, "X", tmpdir / "n.jpg") is None)
+
+    # Degradacao: sem arte gerada, o frame do video assume o fundo.
+    check("sem arte usa o frame do video",
+          th.compose_composite(frame, None, "X", tmpdir / "f.jpg") is not None)
+
+    check("bloco do apresentador na vertical e proporcional ao 16:9",
+          0.35 <= th.VERTICAL_PANEL_FRAC <= 0.5, th.VERTICAL_PANEL_FRAC)
+
+
 def test_thumb_imagegen() -> None:
     """A imagem gerada e um extra: sem ela a capa degrada, nunca falha."""
     print("capa / imagem tematica")
@@ -686,11 +847,15 @@ def test_thumb_imagegen() -> None:
     settings.thumb_generate_image = antes
 
     # Cache por prompt: reprocessar episodio nao pode pagar a imagem de novo.
-    p1 = imagegen._cache_path("vulcao em erupcao", tmpdir)
-    p2 = imagegen._cache_path("vulcao em erupcao", tmpdir)
-    p3 = imagegen._cache_path("mapa da falha", tmpdir)
+    paisagem, retrato = "1536x1024", "1024x1536"
+    p1 = imagegen._cache_path("vulcao em erupcao", tmpdir, paisagem)
+    p2 = imagegen._cache_path("vulcao em erupcao", tmpdir, paisagem)
+    p3 = imagegen._cache_path("mapa da falha", tmpdir, paisagem)
+    p4 = imagegen._cache_path("vulcao em erupcao", tmpdir, retrato)
     check("mesmo prompt, mesmo arquivo de cache", p1 == p2, (p1.name, p2.name))
     check("prompt diferente, arquivo diferente", p1 != p3, (p1.name, p3.name))
+    # A 9:16 pede arte em retrato: nao pode reusar a paisagem do 16:9.
+    check("retrato e paisagem nao compartilham cache", p1 != p4, (p1.name, p4.name))
 
     check("o estilo proibe texto na imagem gerada",
           "no text" in imagegen.STYLE.lower())
@@ -923,8 +1088,12 @@ def main() -> int:
     test_reframe_track()
     test_focus_expression()
     test_same_language_passthrough(tmp)
+    test_clip_openings()
+    test_clip_ranking()
+    test_attribution()
     test_thumb_moment()
     test_thumb_frontality()
+    test_thumb_layout()
     test_thumb_imagegen()
     test_thumb_colors()
     test_eta()

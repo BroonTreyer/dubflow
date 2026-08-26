@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,6 +39,14 @@ FOCUS_HYSTERESIS = 0.12  # so muda o enquadramento se o alvo andar mais que isso
 MIN_SEGMENT = 1.2        # segundos minimos entre dois cortes de camera
 MAX_SEGMENTS = 24        # teto de trocas por corte (a expressao do ffmpeg cresce)
 
+# Quanto o inicio/fim pode andar para cair numa fronteira de FRASE em vez da
+# fronteira de respiracao do Whisper. Generoso de proposito: alguns segundos a
+# mais valem menos que abrir no meio de um raciocinio.
+SNAP_WINDOW = 6.0
+# Duracao alvo do corte para o desempate. Nao e limite (isso e clip_max_seconds):
+# e o ponto em que um corte entrega o gancho e o clima sem esticar.
+DURACAO_IDEAL = 40.0
+
 # Detectores de rosto, carregados uma vez. YuNet (DNN) e melhor — pega rosto de
 # lado e em angulo; o Haar frontal fica de reserva. Ambos tropecam em caminho com
 # acento no Windows, entao sao carregados de forma que contorna isso (ver abaixo).
@@ -63,6 +72,12 @@ tensao — uma acusacao, uma virada, uma frase que exige explicacao. Se abrir co
 rodeio, preparacao ou "entao, como eu estava dizendo", esta morto.
 - **Uma emocao clara e forte**: raiva, vergonha alheia, revolta, desejo, choque, \
 graca. Trecho morno nao performa, por mais bem escrito que seja.
+- **Em conteudo explicativo, a moeda muda.** Aula, divulgacao cientifica e analise \
+raramente tem briga — e forcar "polemica" onde nao ha produz corte falso. Ali o que \
+prende e a REVELACAO CONTRAINTUITIVA: o fato que contradiz o senso comum, a conexao \
+que ninguem faria, o numero que nao fecha com a intuicao. "A Amazonia depende da \
+poeira do Saara" vale mais que qualquer discussao. Use os criterios do bloco do \
+formato acima como prioridade quando eles existirem.
 - **Se sustenta sozinho.** Quem nunca viu o episodio entende sem contexto externo.
 - **Tem virada.** O melhor corte muda de direcao no meio: a resposta atravessada, \
 a revelacao, a frase que cala o outro.
@@ -77,13 +92,67 @@ O QUE NAO SERVE
 - Conversa de transicao, logistica, gente combinando o que vai fazer.
 - Trecho tecnicamente correto mas sem carga emocional. Na duvida, deixe de fora.
 
+REGRAS DE PLATAFORMA — VALEM PARA `thumb_text`, `yt_title`, `caption` E `thumb_badge`
+
+Estas nao sao sugestoes de estilo: violar derruba monetizacao e alcance. Uma
+chamada que o trecho nao entrega e a definicao de clickbait para o YouTube.
+
+- **A promessa tem que ser paga no proprio trecho.** Se a capa pergunta "quando
+  vai acontecer?", a resposta precisa estar NO corte. Curiosidade que o video nao
+  fecha e o que a plataforma pune, e o que faz a pessoa sair em 3 segundos.
+- **Nao invente fato, numero, data nem declaracao.** So use dado que foi dito no
+  trecho. Nada de "cientistas confirmam" se ninguem confirmou nada ali.
+- **Nao anuncie o que nao aconteceu**: "morreu", "foi preso", "acabou" sobre quem
+  nao morreu, nao foi preso, nao acabou. Isso e desinformacao, nao gancho.
+- **Sem palavrao, xingamento ou termo sexual** em qualquer campo. Titulo e capa
+  com palavrao entram em "conteudo inadequado para anunciantes".
+- **Sem apelo a tragedia real** (mortes, acidentes, doenca de pessoa nomeada) como
+  isca. Tratar o tema e legitimo; usar a dor como chamariz nao.
+- **Sem promessa de saude, cura, ganho financeiro garantido ou previsao de
+  catastrofe com data**. "Vai ter terremoto em setembro" e desinformacao; "o que
+  os dados mostram sobre o risco" e o mesmo trecho, sem o problema.
+- **Sem CAIXA ALTA gritada no `yt_title`** e sem fila de "!!!" ou "???".
+- Tensao SIM, mentira NAO. A diferenca esta em prometer a pergunta certa em vez
+  de uma resposta falsa: "ELE NEGOU TUDO" quando ele negou; nunca "CONFESSOU"
+  quando ele negou.
+
+O QUE FAZ UM GANCHO SER BOM (e nao so barulhento)
+
+- **Especifico vence generico.** "PERDEU R$ 2 MILHOES EM 3 DIAS" prende; "VEJA O
+  QUE ACONTECEU" nao diz nada e nao gera clique de quem interessa.
+- **Contradicao prende mais que superlativo.** "QUANDO PARA DE TREMER, PREOCUPA"
+  funciona porque inverte o senso comum. "O MAIOR TERREMOTO DE TODOS" e so volume.
+- **Use a fala.** Quando o trecho tem uma frase que ja e o gancho, cite-a quase
+  literalmente: soa humano e entrega exatamente o que promete.
+- **Uma ideia por capa.** Duas informacoes competindo viram ruido no tamanho de
+  miniatura.
+- **Sem "voce nao vai acreditar", "chocante", "impressionante"** — sao marcadores
+  de clickbait vazio, gastos e penalizados.
+- **Nunca abra com pronome sem referente.** "ISSO E PRA 100 ANOS" nao diz nada para
+  quem esta rolando o feed: ele nao sabe o que e "isso". Nomeie a coisa —
+  "TERRAS RARAS: BRIGA DE 100 ANOS". Vale para isso, esse, aquilo, ele, ela, quando
+  a pessoa/coisa nao foi nomeada na propria capa.
+- **Constatacao nao e gancho.** "UM LUGAR CHOVE, OUTRO SECA" descreve; nao provoca.
+  Ou vira pergunta que o corte responde, ou ganha a consequencia: "O MESMO EL NINO
+  QUE ALAGA O SUL SECA O CENTRO".
+
 REGRAS
 
 - Escolha ate {count} trechos deste bloco, ou menos se o material nao render. \
 Nao complete a cota com trecho fraco: e melhor devolver 4 fortes que 8 mornos.
-- Cada trecho entre {min_s} e {max_s} segundos.
+- Cada trecho entre {min_s} e {max_s} segundos. **Mire em ~40s**: e onde um corte \
+entrega gancho, desenvolvimento e clima sem esticar. So passe de 60s quando a \
+revelacao REALMENTE precisa do contexto — e, nesse caso, a tensao tem que aparecer \
+na primeira metade, nunca so no fim.
 - Alinhe `start` e `end` ao inicio e ao fim de falas completas, usando os timestamps \
-fornecidos. Nunca corte no meio de uma frase.
+fornecidos. Nunca corte no meio de uma frase. O `start` tem que cair no comeco de \
+uma frase NOVA: nao comece em "e...", "entao...", "mas...", "ai...", "porque...", \
+"e...", nem em resposta solta como "absurdo, ne?". Se o trecho bom comeca no meio \
+de um raciocinio, volte alguns segundos ate o inicio da frase que o abre.
+- `score`: use a ESCALA INTEIRA. Numa leva de 5 trechos, espera-se algo como um 9, \
+dois 7, um 6 e um 5. Se voce der 8 ou 9 para todos, o score vira inutil e os piores \
+cortes nao tem como ser descartados. Seja duro: 9-10 e o corte que voce publicaria \
+hoje sem pensar; 5-6 e o que so entra para completar cota.
 - Trechos nao podem se sobrepor.
 - `hook`: a frase de abertura do trecho, copiada da transcricao — serve para conferir \
 o alinhamento.
@@ -377,6 +446,59 @@ def select_clips(
     return _sanitize(bruto, segments, count)
 
 
+# Muletas e conectivos: comecar por eles denuncia que o corte pegou a conversa no
+# meio, mesmo quando a frase esta gramaticalmente inteira.
+_ABERTURA_FRACA = re.compile(
+    r"^(e|entao|então|ai|aí|mas|porque|por isso|ou seja|tipo|assim|ah|eh|é|entendeu|"
+    r"ne|né|sim|nao|não|dai|daí|af|inclusive|alias|aliás|enfim|bom|olha|tambem|"
+    r"também|so que|só que|dai que|daí que)\b",
+    re.IGNORECASE,
+)
+
+# Fim de frase de verdade. Reticencias nao contam: quase sempre e fala cortada.
+_FIM_DE_FRASE = re.compile(r"[.!?]['\"”’)]*\s*$")
+
+
+def _abre_bem(texto: str) -> bool:
+    """O trecho comeca como fala nova, e nao no meio do raciocinio?"""
+    t = (texto or "").strip()
+    if not t:
+        return False
+    if t[0].islower():        # frase cortada ao meio
+        return False
+    return not _ABERTURA_FRACA.match(t)
+
+
+def speech_boundaries(segments: list[dict[str, Any]]) -> tuple[list[float], list[float]]:
+    """(inicios_bons, fins_bons) — fronteiras de FRASE, nao de respiracao.
+
+    O Whisper quebra segmento onde a pessoa respira, nao onde a frase acaba. Alinhar
+    a esses limites e o que fazia 46% dos cortes abrirem com "e la na Italia tem um
+    chamado" ou "absurdo, ne?" — e o proprio prompt diz que os 3 primeiros segundos
+    decidem tudo.
+
+    Inicio bom = segmento que vem depois de ponto final E nao comeca com muleta.
+    Fim bom  = segmento cujo texto termina em . ! ?
+    """
+    inicios: list[float] = []
+    fins: list[float] = []
+    anterior_fechou = True   # o primeiro segmento sempre pode abrir
+
+    for s in segments:
+        texto = (s.get("text") or "").strip()
+        if not texto:
+            continue
+        if anterior_fechou and _abre_bem(texto):
+            inicios.append(float(s["start"]))
+        if _FIM_DE_FRASE.search(texto):
+            fins.append(float(s["end"]))
+            anterior_fechou = True
+        else:
+            anterior_fechou = False
+
+    return inicios, fins
+
+
 def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
               limit_count: int | None = None) -> list[dict[str, Any]]:
     """Encaixa cada corte nas fronteiras reais de fala e remove sobreposicao.
@@ -390,24 +512,51 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
     starts = sorted({float(s["start"]) for s in segments})
     ends = sorted({float(s["end"]) for s in segments})
     limit = max(ends)
+    bons_inicios, bons_fins = speech_boundaries(segments)
 
     def nearest(values: list[float], target: float) -> float:
         return min(values, key=lambda v: abs(v - target))
+
+    def encaixa(preferidos: list[float], fallback: list[float], alvo: float,
+                para_tras: bool) -> float:
+        """Fronteira de frase quando existe perto; senao, a de respiracao.
+
+        A direcao importa e nao e simetrica. Se o inicio caiu no meio de uma frase,
+        o certo e VOLTAR ate onde ela comeca — avancar cortaria o comeco dela fora e
+        o problema continuaria. No fim vale o contrario: AVANCAR ate a frase fechar,
+        porque parar antes deixa a fala pela metade.
+
+        So quando nao ha candidato no lado preferido e que aceita o outro lado.
+        """
+        if preferidos:
+            lado = [v for v in preferidos
+                    if (v <= alvo if para_tras else v >= alvo)
+                    and abs(v - alvo) <= SNAP_WINDOW]
+            if lado:
+                return max(lado) if para_tras else min(lado)
+            candidato = nearest(preferidos, alvo)
+            if abs(candidato - alvo) <= SNAP_WINDOW:
+                return candidato
+        return nearest(fallback, alvo)
 
     clips = sorted(clips, key=lambda c: float(c.get("score") or 0), reverse=True)
 
     cleaned: list[dict[str, Any]] = []
     for clip in clips:
         try:
-            start = nearest(starts, float(clip["start"]))
-            end = nearest(ends, float(clip["end"]))
+            # inicio volta ate a frase abrir; fim avanca ate ela fechar
+            start = encaixa(bons_inicios, starts, float(clip["start"]), para_tras=True)
+            end = encaixa(bons_fins, ends, float(clip["end"]), para_tras=False)
         except (KeyError, TypeError, ValueError):
             continue
 
         start = max(0.0, start - 0.25)  # respiro antes da primeira palavra
         end = min(limit, end + 0.4)
         duration = end - start
-        if duration < settings.clip_min_seconds * 0.6 or duration > settings.clip_max_seconds * 1.5:
+        # A folga existe so para absorver o reencaixe nas fronteiras de frase.
+        # 1.5x sobre 60s deixava passar corte de 90s, que e outro formato.
+        if (duration < settings.clip_min_seconds * 0.6
+                or duration > settings.clip_max_seconds * 1.2):
             continue
         if any(start < c["end"] and end > c["start"] for c in cleaned):
             continue
@@ -429,12 +578,54 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
             }
         )
 
-    if limit_count is not None:
-        # cleaned ja esta em ordem de score, entao o corte do teto tira os piores.
+    if limit_count is not None and len(cleaned) > limit_count:
+        # Nao da para confiar so no score: medido em 28 cortes, o modelo devolve
+        # tudo entre 8 e 10 (media 8.7), entao ordenar por ele e quase sortear.
+        # O desempate usa sinais que a gente MEDE no corte pronto.
+        cleaned.sort(key=lambda c: _rank_key(c, segments), reverse=True)
         cleaned = cleaned[:limit_count]
+
+    espalhamento = _score_spread(cleaned)
+    if espalhamento is not None and espalhamento < 0.6:
+        log.warning("score sem discriminacao (desvio %.2f em %d cortes) — "
+                    "o desempate esta vindo da abertura e da duracao",
+                    espalhamento, len(cleaned))
 
     cleaned.sort(key=lambda c: c["start"])
     return cleaned
+
+
+def _score_spread(clips: list[dict[str, Any]]) -> float | None:
+    """Desvio padrao dos scores. None com menos de 3 cortes (nao diz nada)."""
+    notas = [float(c.get("score") or 0) for c in clips]
+    if len(notas) < 3:
+        return None
+    media = sum(notas) / len(notas)
+    return (sum((n - media) ** 2 for n in notas) / len(notas)) ** 0.5
+
+
+def _rank_key(clip: dict[str, Any], segments: list[dict[str, Any]]) -> tuple:
+    """Ordem de qualidade do corte, do melhor para o pior.
+
+    Combina o score do modelo com duas coisas verificaveis no resultado:
+
+    - **abre bem**: a primeira fala e inicio de frase, sem muleta. E o unico fator
+      que a gente sabe que muda retencao nos 3 primeiros segundos.
+    - **duracao no ponto**: perto de DURACAO_IDEAL. Corte de 75s com o clima no fim
+      perde para um de 40s que entrega logo.
+    """
+    inicio = float(clip["start"])
+    primeira = next(
+        (s.get("text", "") for s in segments
+         if float(s["end"]) > inicio and float(s["start"]) < float(clip["end"])
+         and (s.get("text") or "").strip()),
+        "",
+    )
+    abre = 1 if _abre_bem(primeira) else 0
+    duracao = float(clip["end"]) - inicio
+    # 0 a 1: 1 na duracao ideal, caindo conforme se afasta.
+    encaixe = max(0.0, 1.0 - abs(duracao - DURACAO_IDEAL) / DURACAO_IDEAL)
+    return (abre, round(float(clip.get("score") or 0) + encaixe, 2))
 
 
 def _thumb_time(bruto: Any, start: float, end: float) -> float:

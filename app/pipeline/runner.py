@@ -75,8 +75,9 @@ def _render_variants(
         # A capa vertical e a que aparece no Reels/TikTok/Short; a 16:9 serve para
         # o YouTube horizontal. Sao enquadramentos diferentes do mesmo frame.
         thumb_v = thumbnail.make(
-            video_path, clip, clip_dir / f"{nome}_vertical.jpg", vertical=True
-        )
+            video_path, clip, clip_dir / f"{nome}_vertical.jpg", vertical=True,
+            art_dir=work_dir / "capas",   # sem isto a arte 9:16 ia para o temp e
+        )                                  # era paga de novo a cada reprocesso
         if thumb_v is not None:
             fields["thumb_vertical_path"] = str(thumb_v)
 
@@ -288,6 +289,53 @@ def burn_episode(episode_id: int) -> Path:
     return saida
 
 
+def reselect_clips(episode_id: int) -> int:
+    """Escolhe os cortes de novo a partir da transcricao ja existente.
+
+    Diferente de `rerender_clips`, que so refaz o VIDEO dos trechos ja escolhidos,
+    aqui a IA re-le a transcricao e devolve trechos, ganchos, SEO e os campos da
+    capa (thumb_text/thumb_time/thumb_image_prompt) do zero.
+
+    Existe porque episodio processado antes de uma mudanca no prompt ou no schema
+    carrega os campos antigos para sempre — nao ha como um corte "ganhar" um campo
+    que a IA nunca gerou. Nao baixa nem transcreve nada: reaproveita o
+    translated.json em disco, entao custa uma rodada de selecao, nao um episodio.
+    """
+    episode = db.get_episode(episode_id)
+    if episode is None:
+        raise ValueError(f"episodio {episode_id} nao existe")
+
+    video, translated = _load_artifacts(episode)
+    meta = {
+        "title": episode.get("title"),
+        "channel": episode.get("channel"),
+        "lang_src": episode.get("lang_src"),
+        "lang_dst": episode.get("lang_dst"),
+    }
+
+    db.update_episode(episode_id, started_at=db.now())
+    _set(episode_id, "clipping", 0.8)
+    selected = clips.select_clips(translated, meta)
+    clip_ids = db.replace_clips(episode_id, selected)
+
+    work_dir = settings.episode_dir(episode_id)
+    clip_dir = work_dir / "clips"
+    clip_dir.mkdir(exist_ok=True)
+
+    for i, (clip_id, clip) in enumerate(zip(clip_ids, selected)):
+        try:
+            _render_variants(episode_id, clip_id, clip, video, translated, clip_dir,
+                             i + 1, work_dir, card=bool(episode.get("card_layout")))
+        except RuntimeError as exc:
+            log.error("[ep %s] corte %d falhou: %s", episode_id, i + 1, exc)
+            db.update_clip(clip_id, status="failed")
+        _set(episode_id, "clipping", 0.8 + (i + 1) / max(len(selected), 1) * 0.19)
+
+    _set(episode_id, "done", 1.0, error=None)
+    log.info("[ep %s] reselecao: %d corte(s)", episode_id, len(selected))
+    return len(selected)
+
+
 def rerender_clips(episode_id: int) -> int:
     """Refaz os cortes ja selecionados, sem repetir transcricao nem traducao.
 
@@ -332,6 +380,8 @@ def run_action(episode_id: int, action: str) -> None:
             burn_episode(episode_id)
         elif action == "rerender_clips":
             rerender_clips(episode_id)
+        elif action == "reselect_clips":
+            reselect_clips(episode_id)
         elif action == "distribute":
             resumo = distribute.distribute_episode(episode_id)
             log.info("[ep %s] distribuicao sob demanda: %s", episode_id, resumo)

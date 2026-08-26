@@ -40,7 +40,7 @@ EPISODE_COLUMNS = {
 # Acoes pedidas pelo painel sobre um episodio ja concluido, executadas pelo
 # worker: queimar a legenda no video inteiro, ou refazer os cortes (util depois
 # de mudar o estilo da legenda).
-ACTIONS = ("burn", "rerender_clips", "distribute")
+ACTIONS = ("burn", "rerender_clips", "reselect_clips", "distribute")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
                 "yt_description", "score", "path", "path_wide", "thumb_path",
                 "thumb_vertical_path", "thumb_text", "thumb_time", "thumb_badge",
@@ -565,8 +565,13 @@ def pending_posts() -> list[dict[str, Any]]:
             " c.thumb_path AS clip_thumb,"
             " c.thumb_vertical_path AS clip_thumb_vertical, c.caption AS clip_caption,"
             " c.title AS clip_title, c.yt_title AS clip_yt_title,"
-            " c.yt_description AS clip_yt_description, c.episode_id"
+            " c.yt_description AS clip_yt_description, c.episode_id,"
+            # Origem do episodio: sem isto a publicacao nao tem como creditar o
+            # canal nem linkar o video completo.
+            " e.source_url AS ep_source_url, e.channel AS ep_channel,"
+            " e.meta AS ep_meta"
             " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " JOIN episodes e ON e.id = c.episode_id"
             " LEFT JOIN channels ch ON ch.id = p.channel_id"
             " WHERE p.status = 'pending'"
             "   AND (p.channel_id IS NULL OR ch.status = 'active')"

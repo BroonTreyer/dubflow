@@ -35,14 +35,16 @@ STYLE = (
 )
 
 
-def _cache_path(prompt: str, out_dir: Path) -> Path:
-    chave = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:16]
+def _cache_path(prompt: str, out_dir: Path, size: str) -> Path:
+    # O tamanho entra na chave: retrato e paisagem sao imagens diferentes.
+    chave = hashlib.sha256(f"{size}|{prompt}".encode("utf-8")).hexdigest()[:16]
     return out_dir / f"art_{chave}.png"
 
 
-def generate(prompt: str, out_dir: Path) -> Path | None:
+def generate(prompt: str, out_dir: Path, size: str | None = None) -> Path | None:
     """Gera (ou reaproveita do cache) a imagem tematica. None se nao der."""
     prompt = (prompt or "").strip()
+    size = size or settings.thumb_image_size
     if not prompt or not settings.thumb_generate_image:
         return None
     if not settings.openai_api_key:
@@ -50,7 +52,7 @@ def generate(prompt: str, out_dir: Path) -> Path | None:
         return None
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    destino = _cache_path(prompt, out_dir)
+    destino = _cache_path(prompt, out_dir, size)
     # Cache por prompt: reprocessar um episodio nao paga a imagem de novo.
     if destino.exists() and destino.stat().st_size > 0:
         log.info("imagem da capa veio do cache (%s)", destino.name)
@@ -63,15 +65,15 @@ def generate(prompt: str, out_dir: Path) -> Path | None:
         resposta = client.images.generate(
             model=settings.thumb_image_model,
             prompt=f"{prompt}. {STYLE}",
-            size=settings.thumb_image_size,
+            size=size,
         )
         b64 = getattr(resposta.data[0], "b64_json", None)
         if not b64:
             log.warning("resposta de imagem sem conteudo")
             return None
         destino.write_bytes(base64.b64decode(b64))
-        log.info("imagem da capa gerada (%s, %d KB)",
-                 settings.thumb_image_model, destino.stat().st_size // 1024)
+        log.info("imagem da capa gerada (%s %s, %d KB)",
+                 settings.thumb_image_model, size, destino.stat().st_size // 1024)
         return destino
     except Exception as exc:  # noqa: BLE001 — a capa e um extra
         log.warning("geracao da imagem da capa falhou (%s)", str(exc)[:180])
