@@ -34,7 +34,7 @@ LICENSE_STATES = ("unknown", "licensed", "owned", "public_domain")
 EPISODE_COLUMNS = {
     "source_url", "video_id", "title", "channel", "duration", "lang_src", "lang_dst",
     "segment", "license_status", "status", "progress", "error", "paths", "meta",
-    "updated_at", "pending_action", "started_at",
+    "updated_at", "pending_action", "started_at", "vip_publish", "vip_posted_at",
 }
 
 # Acoes pedidas pelo painel sobre um episodio ja concluido, executadas pelo
@@ -82,7 +82,12 @@ CREATE TABLE IF NOT EXISTS episodes (
     -- Quando o worker PEGOU o episodio (created_at e quando voce colou o link).
     -- E a base do tempo estimado: sem isso, um video que esperou 3h na fila
     -- pareceria estar processando ha 3h.
-    started_at      TEXT
+    started_at      TEXT,
+    -- Separacao de conteudo: os cortes vao pro canal ISCA (divulgacao); o VIDEO
+    -- COMPLETO vai pro canal VIP (so vendavel). vip_publish liga/desliga o envio do
+    -- completo por episodio; vip_posted_at marca quando ja foi (dedup).
+    vip_publish     INTEGER NOT NULL DEFAULT 1,
+    vip_posted_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS clips (
@@ -160,13 +165,15 @@ CREATE TABLE IF NOT EXISTS orders (
     status        TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|delivered|canceled|failed
     attempts      INTEGER NOT NULL DEFAULT 0,       -- tentativas de entrega
     created_at    TEXT NOT NULL,
-    paid_at       TEXT
+    paid_at       TEXT,
+    pix_txid      TEXT              -- id da cobranca no gateway (PushinPay), para o polling
 );
 
 CREATE TABLE IF NOT EXISTS subscriptions (
-    buyer_tg_id   TEXT PRIMARY KEY,
-    expires_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    buyer_tg_id     TEXT PRIMARY KEY,
+    expires_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    vip_removed_at  TEXT           -- quando foi removido do canal VIP (NULL = dentro/ativo)
 );
 
 CREATE INDEX IF NOT EXISTS idx_clips_episode ON clips(episode_id);
@@ -258,6 +265,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE episodes ADD COLUMN card_layout INTEGER NOT NULL DEFAULT 0"
             )
+        # Separacao cortes/VIP: envio do video completo ao canal VIP (bancos antigos).
+        if "vip_publish" not in ep_columns:
+            conn.execute("ALTER TABLE episodes ADD COLUMN vip_publish INTEGER NOT NULL DEFAULT 1")
+        if "vip_posted_at" not in ep_columns:
+            conn.execute("ALTER TABLE episodes ADD COLUMN vip_posted_at TEXT")
 
         # Multi-conta: cadencia de gotejamento por canal (bancos que ja tinham a
         # tabela channels sem a coluna).
@@ -304,6 +316,15 @@ def init_db() -> None:
         order_columns = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
         if "attempts" not in order_columns:
             conn.execute("ALTER TABLE orders ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        # Pix automatico (gateway): id da cobranca para o worker consultar o status.
+        if "pix_txid" not in order_columns:
+            conn.execute("ALTER TABLE orders ADD COLUMN pix_txid TEXT")
+
+        # Canal VIP: bancos antigos ganham a coluna que marca a saida do assinante
+        # quando a assinatura vence (NULL = ainda dentro do VIP).
+        sub_columns = {r["name"] for r in conn.execute("PRAGMA table_info(subscriptions)")}
+        if "vip_removed_at" not in sub_columns:
+            conn.execute("ALTER TABLE subscriptions ADD COLUMN vip_removed_at TEXT")
 
 
 def request_action(episode_id: int, action: str) -> None:
@@ -400,6 +421,28 @@ def create_episode(source_url: str, license_status: str = "unknown",
              1 if card_layout else 0, ts, ts),
         )
         return int(cur.lastrowid)
+
+
+def episodes_pending_vip() -> list[dict[str, Any]]:
+    """Episodios prontos e vendaveis cujo VIDEO COMPLETO ainda nao foi ao canal VIP.
+
+    E a fila da publicacao no VIP: done + license_status vendavel + vip_publish
+    ligado + ainda nao postado. Episodio 'unknown' fica de fora (so vira cortes).
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM episodes WHERE status = 'done' AND vip_publish = 1"
+            "   AND vip_posted_at IS NULL"
+            "   AND license_status IN ('licensed', 'owned', 'public_domain')"
+            " ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_vip_posted(episode_id: int) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE episodes SET vip_posted_at = ? WHERE id = ?",
+                     (now(), episode_id))
 
 
 def update_episode(episode_id: int, **fields: Any) -> None:
@@ -748,7 +791,7 @@ def channel_scheduling_horizon(channel_id: int) -> str | None:
 # --------------------------------------------------------------------------- orders (vendas)
 
 ORDER_STATES = ("pending", "paid", "delivered", "canceled", "failed")
-ORDER_COLUMNS = {"buyer_name", "kind", "episode_id", "amount", "status", "attempts", "paid_at"}
+ORDER_COLUMNS = {"buyer_name", "kind", "episode_id", "amount", "status", "attempts", "paid_at", "pix_txid"}
 MAX_DELIVERY_ATTEMPTS = 4
 
 
@@ -814,13 +857,41 @@ def get_subscription_expiry(buyer_tg_id: str) -> str | None:
 
 
 def set_subscription_expiry(buyer_tg_id: str, expires_at: str) -> None:
+    """Grava/estende a validade. Zera vip_removed_at: pagar de novo re-ativa o
+    acesso ao VIP (um renovador que ja tinha sido removido volta a ser 'ativo')."""
     ts = now()
     with connect() as conn:
         conn.execute(
-            "INSERT INTO subscriptions (buyer_tg_id, expires_at, updated_at) VALUES (?, ?, ?)"
+            "INSERT INTO subscriptions (buyer_tg_id, expires_at, updated_at, vip_removed_at)"
+            " VALUES (?, ?, ?, NULL)"
             " ON CONFLICT(buyer_tg_id) DO UPDATE SET expires_at = excluded.expires_at,"
-            "   updated_at = excluded.updated_at",
+            "   updated_at = excluded.updated_at, vip_removed_at = NULL",
             (str(buyer_tg_id), expires_at, ts),
+        )
+
+
+def list_expired_vip_members(at: str | None = None) -> list[str]:
+    """Assinantes cuja assinatura ja venceu e que ainda nao foram tirados do VIP.
+
+    E a fila da varredura de expiracao: quem esta aqui precisa ser removido do
+    canal VIP e marcado com vip_removed_at.
+    """
+    cutoff = at or now()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT buyer_tg_id FROM subscriptions"
+            " WHERE expires_at <= ? AND vip_removed_at IS NULL",
+            (cutoff,),
+        ).fetchall()
+    return [str(r["buyer_tg_id"]) for r in rows]
+
+
+def mark_vip_removed(buyer_tg_id: str) -> None:
+    """Registra que o assinante ja foi retirado do VIP (nao tenta de novo)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE subscriptions SET vip_removed_at = ? WHERE buyer_tg_id = ?",
+            (now(), str(buyer_tg_id)),
         )
 
 

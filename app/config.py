@@ -185,14 +185,29 @@ class Settings:
 
     # --- telegram ---
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    telegram_channel_id: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+    # Base da Bot API. Padrao = nuvem do Telegram (upload ate 50 MB). Aponte para um
+    # servidor Bot API local (ex.: http://localhost:8081) para enviar o VIDEO COMPLETO
+    # ao canal VIP com ate 2 GB.
+    telegram_api_base: str = os.getenv("TELEGRAM_API_BASE", "https://api.telegram.org")
+    telegram_channel_id: str = os.getenv("TELEGRAM_CHANNEL_ID", "")   # canal ISCA (cortes gratis)
+    telegram_vip_chat_id: str = os.getenv("TELEGRAM_VIP_CHAT_ID", "")  # canal VIP (eps, so quem assina)
+    telegram_channel_link: str = os.getenv("TELEGRAM_CHANNEL_LINK", "")  # @user ou t.me do canal geral
+    telegram_welcome_image: str = os.getenv("TELEGRAM_WELCOME_IMAGE", "")  # banner do /start (arquivo)
 
     # --- venda no telegram (pagamento manual: voce confirma o Pix no painel) ---
     pix_key: str = os.getenv("PIX_KEY", "")               # sua chave Pix, mostrada ao comprador
     pix_name: str = os.getenv("PIX_NAME", "")             # nome do recebedor (aparece pro comprador)
+    # --- Pix AUTOMATICO via gateway (QR + copia-e-cola + confirmacao sozinho) ---
+    # Com um token preenchido, o bot gera cobranca dinamica e o worker confirma o
+    # pagamento por polling; vazio, cai no Pix manual (pix_key + confirmacao no painel).
+    # PIX_PROVIDER escolhe o gateway: 'abacatepay' (padrao) ou 'pushinpay'.
+    pix_provider: str = os.getenv("PIX_PROVIDER", "abacatepay")
+    abacatepay_token: str = os.getenv("ABACATEPAY_TOKEN", "")
+    pushinpay_token: str = os.getenv("PUSHINPAY_TOKEN", "")
     price_episode: float = _float("PRICE_EPISODE", 9.90)  # valor por episodio avulso (BRL)
-    price_subscription: float = _float("PRICE_SUBSCRIPTION", 29.90)  # valor da assinatura (BRL)
-    subscription_days: int = _int("SUBSCRIPTION_DAYS", 30)  # duracao da assinatura
+    price_subscription: float = _float("PRICE_SUBSCRIPTION", 20.00)  # mensalidade (BRL)
+    price_lifetime: float = _float("PRICE_LIFETIME", 120.00)  # acesso vitalicio (BRL)
+    subscription_days: int = _int("SUBSCRIPTION_DAYS", 30)  # duracao da mensalidade
 
     # --- servidor ---
     port: int = _int("PORT", 8030)

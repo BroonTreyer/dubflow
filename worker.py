@@ -15,8 +15,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app import attribution, db, publishers, sales
-from app.config import configure_logging
+from app import attribution, db, pix, publishers, sales
+from app.config import configure_logging, settings
 from app.pipeline import archive, runner
 
 # Titulos de video vem em qualquer alfabeto. Com o log redirecionado para arquivo,
@@ -147,12 +147,34 @@ def run_delivery_queue() -> bool:
         return False
     order = pagos[-1]  # o mais antigo (list_orders vem do mais novo para o mais velho)
 
-    if order["kind"] == "subscription":
-        expira = db.get_subscription_expiry(order["buyer_tg_id"]) or "?"
+    if order["kind"] in ("subscription", "lifetime"):
+        if order["kind"] == "lifetime":
+            validade = "Seu acesso é vitalício — nunca expira."
+        else:
+            expira = db.get_subscription_expiry(order["buyer_tg_id"]) or "?"
+            validade = f"Seu acesso vale até {expira[:10]}."
+        invite, err = publishers.telegram.create_vip_invite()
+        if not invite:
+            # Ainda nao deu para gerar o convite (VIP nao configurado ou erro de
+            # rede). Conta a tentativa e tenta de novo na proxima volta; passando do
+            # teto, vira 'failed' para nao travar a fila para sempre.
+            attempts = (order.get("attempts") or 0) + 1
+            if attempts >= db.MAX_DELIVERY_ATTEMPTS:
+                db.update_order(order["id"], status="failed", attempts=attempts)
+                log.error("assinatura %s: sem link VIP apos %d tentativas: %s",
+                          order["id"], attempts, err)
+            else:
+                db.update_order(order["id"], attempts=attempts)
+                log.warning("assinatura %s: convite VIP falhou (tentativa %d): %s",
+                            order["id"], attempts, err)
+            return True
         publishers.telegram.notify(
             order["buyer_tg_id"],
-            f"Pagamento confirmado! Sua assinatura esta ativa ate {expira[:10]}. "
-            "Use /catalogo para pedir os episodios.",
+            "Pagamento confirmado. Bem-vindo ao VIP.\n\n"
+            f"{validade} Entre no canal com todos os episódios pelo seu link "
+            "exclusivo (uso único, não compartilhe):\n\n"
+            f"{invite}\n\n"
+            "Bom dorama.",
         )
         db.update_order(order["id"], status="delivered")
         return True
@@ -212,6 +234,119 @@ def run_stats_refresh() -> bool:
     return True
 
 
+_vip_oversize_warned: set[int] = set()
+
+
+def _max_upload_bytes() -> int:
+    """Limite de upload conforme a base da Bot API: nuvem = 50 MB, local = 2 GB."""
+    base = settings.telegram_api_base or ""
+    return 50 * 1024 * 1024 if "api.telegram.org" in base else 2000 * 1024 * 1024
+
+
+def run_vip_publish() -> bool:
+    """Posta o VIDEO COMPLETO dos episodios vendaveis no canal VIP (um por volta).
+
+    Separacao de conteudo: os cortes vao pro canal isca (distribuicao); aqui o
+    episodio inteiro vai pro VIP, so para quem assina. Dedup por vip_posted_at.
+    Um arquivo acima do limite da Bot API atual nao e enviado (evita torrar banda);
+    o aviso pede o servidor Bot API local. Devolve True se agiu.
+    """
+    if not publishers.telegram.vip_configured():
+        return False
+    pendentes = db.episodes_pending_vip()
+    if not pendentes:
+        return False
+    ep = pendentes[0]
+    meta = archive.find(ep["id"])
+    video = (meta or {}).get("arquivos", {}).get("episodio") if meta else None
+    if not video or not Path(video).exists():
+        log.warning("VIP: episodio %s sem video completo no acervo; marcando como visto", ep["id"])
+        db.mark_vip_posted(ep["id"])  # sem arquivo nao ha o que postar; nao reprocessa
+        return True
+
+    size = Path(video).stat().st_size
+    if size > _max_upload_bytes():
+        if ep["id"] not in _vip_oversize_warned:
+            log.warning("VIP: episodio %s tem %.0f MB, acima do limite da Bot API atual — "
+                        "suba um servidor Bot API local (TELEGRAM_API_BASE) para ate 2 GB",
+                        ep["id"], size / 1024 / 1024)
+            _vip_oversize_warned.add(ep["id"])
+        return False  # nao tenta subir; espera o Bot API local
+
+    caption = meta.get("titulo") or f"Episodio {ep['id']}"
+    if meta.get("canal"):
+        caption = f"{caption}\n{meta['canal']}"
+    log.info("VIP: publicando episodio %s (%.0f MB) no canal VIP", ep["id"], size / 1024 / 1024)
+    result = publishers.telegram.publish_vip_episode(Path(video), caption)
+    if result.ok:
+        db.mark_vip_posted(ep["id"])
+        log.info("VIP: episodio %s publicado no canal VIP", ep["id"])
+        return True
+    log.warning("VIP: falha ao publicar episodio %s (tentara de novo): %s",
+                ep["id"], result.error)
+    return False
+
+
+def run_pix_poll() -> bool:
+    """Confirma sozinho os pedidos pagos: consulta o gateway (PushinPay) sobre cada
+    pedido pendente que tem cobranca e, quando 'paid', marca pago (o que estende a
+    assinatura) — a fila de entrega entao manda o link do VIP. Devolve True se agiu.
+
+    E o coracao do Pix automatico: substitui a confirmacao manual no painel.
+    """
+    if not pix.configured():
+        return False
+    pendentes = [o for o in db.list_orders(status="pending") if o.get("pix_txid")]
+    if not pendentes:
+        return False
+    agiu = False
+    for order in pendentes:
+        status, err = pix.charge_status(order["pix_txid"])
+        if err:
+            log.warning("pedido %s: consulta Pix falhou: %s", order["id"], err)
+            continue
+        if status == pix.PAID:
+            sales.confirm_payment(order["id"])  # vira 'paid' + estende assinatura
+            log.info("pedido %s pago (Pix automatico) — indo para entrega", order["id"])
+            agiu = True
+        elif status in pix.DEAD:
+            db.update_order(order["id"], status="canceled")
+            log.info("pedido %s %s no gateway — cancelado", order["id"], status)
+            agiu = True
+        # 'created' = ainda nao pago; fica na fila para a proxima volta
+    return agiu
+
+
+def run_vip_expiry() -> bool:
+    """Remove do canal VIP os assinantes cuja assinatura venceu. Devolve True se agiu.
+
+    So mexe em quem venceu E ainda nao foi removido (list_expired_vip_members).
+    Marca vip_removed_at apenas no sucesso: se a remocao falhar (ex.: bot sem
+    permissao), tenta de novo na proxima volta em vez de deixar o assinante
+    vencido dentro do VIP.
+    """
+    if not publishers.telegram.vip_configured():
+        return False
+    vencidos = db.list_expired_vip_members()
+    if not vencidos:
+        return False
+    for buyer in vencidos:
+        result = publishers.telegram.remove_from_vip(buyer)
+        if result.ok:
+            db.mark_vip_removed(buyer)
+            log.info("assinante %s removido do VIP (assinatura vencida)", buyer)
+            publishers.telegram.notify(
+                buyer,
+                "Sua assinatura venceu e o acesso ao VIP foi encerrado.\n\n"
+                "Para voltar, é só renovar com Seja Prime (ou /assinar) que eu "
+                "te coloco de volta na hora.",
+            )
+        else:
+            log.warning("falha ao remover %s do VIP (tentara de novo): %s",
+                        buyer, result.error)
+    return True
+
+
 def main() -> None:
     db.init_db()
 
@@ -236,7 +371,11 @@ def main() -> None:
             stats = run_stats_refresh()
             acted = run_action_queue()
             processed = run_episode_queue()
-            did_work = published or delivered or stats or acted or processed
+            paid = run_pix_poll()
+            expired = run_vip_expiry()
+            vip_ep = run_vip_publish()
+            did_work = (published or delivered or stats or acted or processed
+                        or paid or expired or vip_ep)
         except KeyboardInterrupt:
             log.info("encerrando")
             return

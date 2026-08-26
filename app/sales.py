@@ -40,6 +40,10 @@ def create_subscription_order(buyer_tg_id: str, buyer_name: str | None = None) -
     return db.create_order(buyer_tg_id, "subscription", buyer_name, None, settings.price_subscription)
 
 
+def create_lifetime_order(buyer_tg_id: str, buyer_name: str | None = None) -> int:
+    return db.create_order(buyer_tg_id, "lifetime", buyer_name, None, settings.price_lifetime)
+
+
 def grant_episode(buyer_tg_id: str, episode_id: int, buyer_name: str | None = None) -> int:
     """Entrega gratis para quem ja tem acesso (assinante, ou ja comprou o avulso).
 
@@ -63,6 +67,8 @@ def confirm_payment(order_id: int) -> dict[str, Any] | None:
     db.update_order(order_id, status="paid", paid_at=db.now())
     if order["kind"] == "subscription":
         _extend_subscription(str(order["buyer_tg_id"]))
+    elif order["kind"] == "lifetime":
+        _grant_lifetime(str(order["buyer_tg_id"]))
     return db.get_order(order_id)
 
 
@@ -71,6 +77,20 @@ def mark_delivered(order_id: int) -> None:
 
 
 # ----------------------------------------------------------------------- assinatura
+
+
+# Vitalicio: uma validade tao distante que subscription_active e sempre True e a
+# varredura de expiracao (expires_at <= agora) nunca o alcanca. Reusa toda a
+# maquinaria de assinatura sem uma coluna nova.
+LIFETIME_EXPIRY = "9999-12-31T23:59:59+00:00"
+
+
+def _grant_lifetime(buyer_tg_id: str) -> None:
+    db.set_subscription_expiry(buyer_tg_id, LIFETIME_EXPIRY)
+
+
+def is_lifetime(buyer_tg_id: str) -> bool:
+    return db.get_subscription_expiry(buyer_tg_id) == LIFETIME_EXPIRY
 
 
 def _extend_subscription(buyer_tg_id: str) -> None:
@@ -97,8 +117,16 @@ def has_access(buyer_tg_id: str, episode_id: int) -> bool:
 
 def pix_instructions(amount: float) -> str:
     valor = f"R$ {amount:.2f}".replace(".", ",")
-    linhas = [f"Valor: {valor}", f"Chave Pix: {settings.pix_key or '(defina PIX_KEY no .env)'}"]
+    linhas = [
+        f"Falta só o pagamento — um Pix de {valor}:",
+        "",
+        f"Chave Pix: {settings.pix_key or '(defina PIX_KEY no .env)'}",
+    ]
     if settings.pix_name:
         linhas.append(f"Recebedor: {settings.pix_name}")
-    linhas.append("Depois de pagar, mande o comprovante aqui e aguarde a confirmacao.")
+    linhas += [
+        "",
+        "Depois de pagar, envie o comprovante aqui que eu confirmo e libero o "
+        "seu acesso.",
+    ]
     return "\n".join(linhas)

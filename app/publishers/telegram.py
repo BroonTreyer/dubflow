@@ -11,19 +11,21 @@ Duas funcoes distintas:
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from app import credentials
+from app.config import settings
 from app.pipeline import archive
 from app.publishers.base import PublishResult
 
 log = logging.getLogger(__name__)
-
-API = "https://api.telegram.org"
 
 # Licencas que autorizam distribuicao comercial do episodio completo.
 SELLABLE_LICENSES = {"licensed", "owned", "public_domain"}
@@ -37,7 +39,9 @@ def configured(channel_id: int | None = None) -> bool:
 
 
 def _url(method: str, channel_id: int | None = None) -> str:
-    return f"{API}/bot{credentials.get("TELEGRAM_BOT_TOKEN", channel_id)}/{method}"
+    # Base configuravel: nuvem do Telegram (50 MB) ou Bot API local (ate 2 GB).
+    base = (settings.telegram_api_base or "https://api.telegram.org").rstrip("/")
+    return f"{base}/bot{credentials.get("TELEGRAM_BOT_TOKEN", channel_id)}/{method}"
 
 
 def send_clip(video_path: Path, caption: str, chat_id: str | None = None,
@@ -68,14 +72,160 @@ def send_clip(video_path: Path, caption: str, chat_id: str | None = None,
     return PublishResult(True, remote_id=message_id)
 
 
-def notify(chat_id: str, text: str) -> PublishResult:
-    """Manda uma mensagem de texto a um chat (confirmacao de assinatura, avisos)."""
-    if not configured():
+def notify(chat_id: str, text: str, reply_markup: dict[str, Any] | None = None) -> PublishResult:
+    """Manda uma mensagem de texto a um chat (DM do comprador, avisos).
+
+    So exige o token — e envio direto a um chat, nao usa o canal. `reply_markup`
+    (opcional) anexa o teclado de botoes.
+    """
+    if not credentials.get("TELEGRAM_BOT_TOKEN"):
         return PublishResult(False, error="Telegram nao configurado")
+    data: dict[str, Any] = {"chat_id": chat_id, "text": text}
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup)
+    try:
+        response = requests.post(_url("sendMessage"), data=data, timeout=30).json()
+    except requests.RequestException as exc:
+        return PublishResult(False, error=f"erro de rede: {exc}")
+    if not response.get("ok"):
+        return PublishResult(False, error=str(response.get("description")))
+    return PublishResult(True, remote_id=str(response["result"]["message_id"]))
+
+
+def send_photo_path(chat_id: str, image_path: Path, caption: str = "",
+                    reply_markup: dict[str, Any] | None = None) -> PublishResult:
+    """Envia uma imagem de um arquivo local (ex.: o banner de boas-vindas) a um chat,
+    com legenda e teclado opcionais. So exige o token."""
+    if not credentials.get("TELEGRAM_BOT_TOKEN"):
+        return PublishResult(False, error="Telegram nao configurado")
+    path = Path(image_path)
+    if not path.exists():
+        return PublishResult(False, error=f"imagem nao encontrada: {path}")
+    data: dict[str, Any] = {"chat_id": chat_id, "caption": caption[:1024]}
+    if reply_markup is not None:
+        data["reply_markup"] = json.dumps(reply_markup)
+    try:
+        with path.open("rb") as fh:
+            response = requests.post(
+                _url("sendPhoto"), data=data,
+                files={"photo": fh}, timeout=120,
+            ).json()
+    except requests.RequestException as exc:
+        return PublishResult(False, error=f"erro de rede: {exc}")
+    if not response.get("ok"):
+        return PublishResult(False, error=str(response.get("description")))
+    return PublishResult(True, remote_id=str(response["result"]["message_id"]))
+
+
+# ------------------------------------------------------------------- canal VIP
+# O acesso pago e um Canal VIP privado: quem assina entra por um link de convite
+# de uso unico; quando a assinatura vence, e removido. So depende do token + do
+# TELEGRAM_VIP_CHAT_ID (config global), nao do cofre por canal.
+
+
+def vip_configured() -> bool:
+    return bool(credentials.get("TELEGRAM_BOT_TOKEN")
+                and credentials.get("TELEGRAM_VIP_CHAT_ID"))
+
+
+def create_vip_invite(expire_seconds: int = 86_400) -> tuple[str | None, str | None]:
+    """Gera um link de convite de USO UNICO para o canal VIP.
+
+    Retorna (link, erro). member_limit=1 impede repasse a varias pessoas; o link
+    ainda vale por `expire_seconds` (padrao 24h) so para o comprador entrar.
+    """
+    if not vip_configured():
+        return None, "Canal VIP nao configurado (defina TELEGRAM_VIP_CHAT_ID)"
+    payload: dict[str, Any] = {
+        "chat_id": credentials.get("TELEGRAM_VIP_CHAT_ID"),
+        "member_limit": 1,
+    }
+    if expire_seconds > 0:
+        payload["expire_date"] = int(time.time()) + expire_seconds
+    try:
+        response = requests.post(_url("createChatInviteLink"), data=payload, timeout=30).json()
+    except requests.RequestException as exc:
+        return None, f"erro de rede: {exc}"
+    if not response.get("ok"):
+        return None, str(response.get("description"))
+    return response["result"]["invite_link"], None
+
+
+def remove_from_vip(user_id: str) -> PublishResult:
+    """Expulsa o assinante do canal VIP quando a assinatura vence.
+
+    Faz ban seguido de unban: expulsa sem banir para sempre, entao a pessoa pode
+    voltar se renovar (recebe um novo link de convite na renovacao).
+    """
+    if not vip_configured():
+        return PublishResult(False, error="Canal VIP nao configurado")
+    vip = credentials.get("TELEGRAM_VIP_CHAT_ID")
+    try:
+        banned = requests.post(
+            _url("banChatMember"),
+            data={"chat_id": vip, "user_id": user_id},
+            timeout=30,
+        ).json()
+        requests.post(
+            _url("unbanChatMember"),
+            data={"chat_id": vip, "user_id": user_id, "only_if_banned": "true"},
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        return PublishResult(False, error=f"erro de rede: {exc}")
+    if not banned.get("ok"):
+        return PublishResult(False, error=str(banned.get("description")))
+    return PublishResult(True)
+
+
+def send_photo_b64(chat_id: str, image_b64: str, caption: str = "") -> PublishResult:
+    """Envia uma imagem em base64 (ex.: o QR code do Pix) a um chat.
+
+    So depende do token (e um envio de DM, nao usa o canal). Aceita tanto o base64
+    cru quanto o formato 'data:image/png;base64,....'.
+    """
+    if not credentials.get("TELEGRAM_BOT_TOKEN"):
+        return PublishResult(False, error="Telegram nao configurado")
+    raw = image_b64.split(",", 1)[-1] if image_b64 else ""
+    try:
+        img = base64.b64decode(raw)
+    except (ValueError, TypeError) as exc:
+        return PublishResult(False, error=f"base64 invalido: {exc}")
     try:
         response = requests.post(
-            _url("sendMessage"), data={"chat_id": chat_id, "text": text}, timeout=30
+            _url("sendPhoto"),
+            data={"chat_id": chat_id, "caption": caption[:1024]},
+            files={"photo": ("qr.png", img, "image/png")},
+            timeout=60,
         ).json()
+    except requests.RequestException as exc:
+        return PublishResult(False, error=f"erro de rede: {exc}")
+    if not response.get("ok"):
+        return PublishResult(False, error=str(response.get("description")))
+    return PublishResult(True, remote_id=str(response["result"]["message_id"]))
+
+
+def publish_vip_episode(video_path: Path, caption: str) -> PublishResult:
+    """Posta o VIDEO COMPLETO do episodio no canal VIP (so quem assina ve).
+
+    E a metade paga da separacao: os cortes vao pro canal isca (send_clip), o
+    completo vem para ca. Arquivos grandes (episodio de 1h) exigem um servidor Bot
+    API local (TELEGRAM_API_BASE); com a nuvem padrao do Telegram o limite e 50 MB.
+    """
+    if not vip_configured():
+        return PublishResult(False, error="Canal VIP nao configurado")
+    path = Path(video_path)
+    if not path.exists():
+        return PublishResult(False, error=f"video do episodio nao encontrado: {path}")
+    try:
+        with path.open("rb") as fh:
+            response = requests.post(
+                _url("sendVideo"),
+                data={"chat_id": credentials.get("TELEGRAM_VIP_CHAT_ID"),
+                      "caption": caption[:1024], "supports_streaming": "true"},
+                files={"video": fh},
+                timeout=1800,  # upload de episodio inteiro pode demorar
+            ).json()
     except requests.RequestException as exc:
         return PublishResult(False, error=f"erro de rede: {exc}")
     if not response.get("ok"):

@@ -31,7 +31,8 @@ MANAGED: dict[str, list[str]] = {
     "youtube": ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN", "YOUTUBE_PRIVACY"],
     "instagram": ["IG_USER_ID", "IG_ACCESS_TOKEN", "PUBLIC_BASE_URL"],
     "tiktok": ["TIKTOK_ACCESS_TOKEN"],
-    "telegram": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID"],
+    "telegram": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHANNEL_ID", "TELEGRAM_VIP_CHAT_ID"],
+    "pix": ["ABACATEPAY_TOKEN", "PUSHINPAY_TOKEN"],
 }
 ALL_KEYS: list[str] = [key for keys in MANAGED.values() for key in keys]
 
@@ -39,6 +40,7 @@ ALL_KEYS: list[str] = [key for keys in MANAGED.values() for key in keys]
 SECRET_KEYS = {
     "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN",
     "IG_ACCESS_TOKEN", "TIKTOK_ACCESS_TOKEN", "TELEGRAM_BOT_TOKEN",
+    "PUSHINPAY_TOKEN", "ABACATEPAY_TOKEN",
 }
 
 # Chaves compartilhadas entre canais (infra do servidor / preferencia / credencial

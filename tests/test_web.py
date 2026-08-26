@@ -268,17 +268,42 @@ def main() -> int:
 
     print("bot de vendas (fatia 3)")
     import bot
-    check("/start responde com os comandos", "/comprar" in bot._handle_text("/start", 900, "X"))
+    check("/start apresenta os planos (VIP)", "VIP" in bot._handle_text("/start", 900, "X"))
+    # Botoes do teclado viram comandos.
+    _rp = bot._handle_text(bot.BTN_MENSAL, 902, "Z")
+    check("botao Assinar mensal cria cobranca de assinatura",
+          "pedido" in _rp.lower() and any(o["kind"] == "subscription"
+                                          and str(o["buyer_tg_id"]) == "902"
+                                          for o in db.list_orders()))
+    _rv = bot._handle_text(bot.BTN_VITALICIO, 904, "V")
+    check("botao Plano vitalicio cria cobranca vitalicia",
+          "pedido" in _rv.lower() and any(o["kind"] == "lifetime"
+                                          and str(o["buyer_tg_id"]) == "904"
+                                          for o in db.list_orders()))
+    check("botao Canal geral responde com o canal",
+          "canal" in bot._handle_text(bot.BTN_CANAL, 903, "W").lower())
+    check("teclado tem os 5 botoes",
+          {b["text"] for row in bot.main_keyboard()["keyboard"] for b in row}
+          == {bot.BTN_MENSAL, bot.BTN_VITALICIO, bot.BTN_CATALOGO,
+              bot.BTN_ASSINANTE, bot.BTN_CANAL})
+    # Vitalicio: paga uma vez, acesso permanente, nunca sai do VIP.
+    _lo = sales.create_lifetime_order("40404", "Vital")
+    sales.confirm_payment(_lo)
+    check("vitalicio ativa o acesso", sales.subscription_active("40404") is True)
+    check("vitalicio e marcado como lifetime", sales.is_lifetime("40404") is True)
+    check("vitalicio nunca entra na fila de expiracao",
+          "40404" not in db.list_expired_vip_members())
     r = bot._handle_text("/comprar 1", 900, "Cliente")
-    check("/comprar cria pedido avulso e mostra o Pix", "Pedido" in r and "Pix" in r, r)
+    check("/comprar cria pedido avulso e mostra o Pix",
+          "pedido" in r.lower() and "pix" in r.lower(), r)
     check("/comprar registra o pedido no banco",
           any(o["kind"] == "episode" and str(o["buyer_tg_id"]) == "900" for o in db.list_orders()))
     check("/comprar id inexistente avisa",
           "catalogo" in bot._handle_text("/comprar 9999", 900, "X").lower())
     r3 = bot._handle_text("/assinar", 901, "Y")
     check("/assinar cria pedido de assinatura",
-          "Pedido" in r3 and any(o["kind"] == "subscription" and str(o["buyer_tg_id"]) == "901"
-                                 for o in db.list_orders()), r3)
+          "pedido" in r3.lower() and any(o["kind"] == "subscription" and str(o["buyer_tg_id"]) == "901"
+                                         for o in db.list_orders()), r3)
     # Conserto: assinante (555002, com assinatura ativa da secao anterior) recebe na hora.
     r4 = bot._handle_text("/comprar 1", 555002, "Ciclana")
     check("assinante recebe sem pagar de novo",
@@ -287,6 +312,123 @@ def main() -> int:
                     if str(o["buyer_tg_id"]) == "555002" and o["kind"] == "episode"]
     check("pedido do assinante ja entra pago (fila de entrega)",
           bool(do_assinante) and do_assinante[0]["status"] == "paid", do_assinante)
+
+    print("canal VIP (acesso por assinatura)")
+    import os as _os
+    import worker as _worker
+    from app.publishers import telegram as _tg
+    _os.environ["TELEGRAM_VIP_CHAT_ID"] = "-100777666"
+    _vip_calls: list = []
+    _orig_post = _tg.requests.post
+
+    class _FakeResp:
+        def __init__(self, payload): self._p = payload
+        def json(self): return self._p
+
+    def _fake_post(url, data=None, files=None, timeout=None):
+        _vip_calls.append((url, data or {}))
+        if "createChatInviteLink" in url:
+            return _FakeResp({"ok": True, "result": {"invite_link": "https://t.me/+vip"}})
+        if "sendMessage" in url:  # notify() le result["message_id"]
+            return _FakeResp({"ok": True, "result": {"message_id": 1}})
+        return _FakeResp({"ok": True, "result": True})  # ban/unban devolvem True
+
+    _tg.requests.post = _fake_post
+    try:
+        check("VIP configurado com token + chat", _tg.vip_configured() is True)
+        _link, _err = _tg.create_vip_invite()
+        check("convite VIP e link de uso unico", _link == "https://t.me/+vip" and _err is None)
+        _inv = [c for c in _vip_calls if "createChatInviteLink" in c[0]][0]
+        check("convite usa member_limit=1 no chat VIP certo",
+              _inv[1].get("member_limit") == 1 and str(_inv[1].get("chat_id")) == "-100777666")
+        check("remover do VIP faz kick (ban + unban)",
+              _tg.remove_from_vip("42").ok
+              and any("banChatMember" in c[0] for c in _vip_calls)
+              and any("unbanChatMember" in c[0] for c in _vip_calls))
+        db.set_subscription_expiry("v_venc", "2000-01-01T00:00:00")   # vencido, dentro do VIP
+        db.set_subscription_expiry("v_ativo", "2999-01-01T00:00:00")  # ativo
+        check("vencido entra na fila de expiracao", "v_venc" in db.list_expired_vip_members())
+        check("ativo fora da fila de expiracao", "v_ativo" not in db.list_expired_vip_members())
+        check("sweep de expiracao age e remove", _worker.run_vip_expiry() is True)
+        check("removido some da fila (nao tenta em loop)",
+              "v_venc" not in db.list_expired_vip_members())
+        # Renovar zera a marca de saida: se vencer de novo, volta para a fila.
+        db.set_subscription_expiry("v_venc", "2999-01-01T00:00:00")
+        db.set_subscription_expiry("v_venc", "2000-01-01T00:00:00")
+        check("renovacao zera a marca (reentra na fila ao vencer)",
+              "v_venc" in db.list_expired_vip_members())
+    finally:
+        _tg.requests.post = _orig_post
+
+    print("Pix automatico (gateway)")
+    _os.environ["ABACATEPAY_TOKEN"] = "tok_fake"
+    _paidflag = {"v": False}
+    _post_orig = _tg.requests.post
+    _get_orig = _tg.requests.get
+
+    # pix.requests e telegram.requests sao o MESMO modulo: um dispatcher unico
+    # atende o gateway AbacatePay (json=/params=) e o Telegram (data=/files=).
+    def _uni_post(url, json=None, data=None, files=None, params=None, headers=None, timeout=None):
+        if "abacatepay" in url:
+            return _FakeResp({"data": {"id": "tx_777", "brCode": "PIXCOPIACOLA",
+                                       "brCodeBase64": "data:image/png;base64,iVBORw0KGgo=",
+                                       "status": "PENDING", "amount": (json or {}).get("amount")},
+                              "error": None})
+        if "createChatInviteLink" in url:
+            return _FakeResp({"ok": True, "result": {"invite_link": "https://t.me/+vip"}})
+        return _FakeResp({"ok": True, "result": {"message_id": 1}})
+
+    def _uni_get(url, params=None, headers=None, timeout=None):
+        return _FakeResp({"data": {"status": "PAID" if _paidflag["v"] else "PENDING"},
+                          "error": None})
+
+    _tg.requests.post = _uni_post
+    _tg.requests.get = _uni_get
+    try:
+        _r = bot._handle_text("/assinar", 24680, "PixCliente")
+        check("Pix auto: bot devolve o copia-e-cola", _r == "PIXCOPIACOLA", _r)
+        _po = [o for o in db.list_orders() if str(o["buyer_tg_id"]) == "24680"][0]
+        check("Pix auto: txid gravado no pedido", _po.get("pix_txid") == "tx_777", _po.get("pix_txid"))
+        check("Pix auto: pedido nasce pendente", _po["status"] == "pending")
+        check("Pix auto: poll nao confirma enquanto nao pago", _worker.run_pix_poll() is False)
+        _paidflag["v"] = True
+        check("Pix auto: poll confirma quando pago", _worker.run_pix_poll() is True)
+        check("Pix auto: pedido vira pago", db.get_order(_po["id"])["status"] in ("paid", "delivered"))
+        check("Pix auto: assinatura ativa apos pagar",
+              db.get_subscription_expiry("24680") is not None)
+    finally:
+        _tg.requests.post = _post_orig
+        _tg.requests.get = _get_orig
+        _os.environ.pop("ABACATEPAY_TOKEN", None)
+
+    print("separacao cortes/VIP (video completo)")
+    _ep_vip = db.create_episode("https://x/vip", license_status="owned")
+    db.update_episode(_ep_vip, status="done")
+    _ep_unk = db.create_episode("https://x/unk", license_status="unknown")
+    db.update_episode(_ep_unk, status="done")
+    _pend0 = {e["id"] for e in db.episodes_pending_vip()}
+    check("vendavel entra na fila do VIP", _ep_vip in _pend0)
+    check("licenca unknown NAO vai pro VIP (so cortes)", _ep_unk not in _pend0)
+    _vid = settings.data_dir / "ep_full.mp4"
+    _vid.write_bytes(b"FAKEVIDEO")
+    _find_bkp = _worker.archive.find
+    _post_bkp = _tg.requests.post
+    _worker.archive.find = lambda eid: {"titulo": f"Ep {eid}", "canal": "Canal",
+                                        "arquivos": {"episodio": str(_vid)}}
+    _tg.requests.post = lambda url, data=None, files=None, json=None, params=None, \
+        headers=None, timeout=None: _FakeResp({"ok": True, "result": {"message_id": 7}})
+    try:
+        for _ in range(20):
+            if _ep_vip not in {e["id"] for e in db.episodes_pending_vip()}:
+                break
+            _worker.run_vip_publish()
+        check("worker publica o completo e o episodio sai da fila do VIP",
+              _ep_vip not in {e["id"] for e in db.episodes_pending_vip()})
+        check("unknown nunca entrou na fila do VIP",
+              _ep_unk not in {e["id"] for e in db.episodes_pending_vip()})
+    finally:
+        _worker.archive.find = _find_bkp
+        _tg.requests.post = _post_bkp
 
     print("posts presos (achado 11)")
     pid = db.pending_posts()[0]["id"]
