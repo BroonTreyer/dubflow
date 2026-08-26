@@ -5,7 +5,20 @@
 <p class="muted"><a href="/">&larr; voltar</a></p>
 
 <div class="panel">
+  {% set aptos = channels | selectattr('ready') | selectattr('niche') | list | length %}
   <h2>Contas conectadas ({{ channels | length }})</h2>
+  {# "Conectado" e "recebe cortes" sao coisas diferentes: falta o segmento no
+     meio. Este resumo mostra quantos estao REALMENTE prontos para receber. #}
+  <div class="note" style="margin-bottom:12px{% if aptos < channels | length %};border-color:var(--err){% endif %}">
+    <strong>{{ aptos }} de {{ channels | length }}</strong> prontos para receber cortes
+    <span class="muted">— precisa de credenciais <em>e</em> segmento preenchido.</span>
+    {% if aptos < channels | length %}
+    <div class="muted" style="font-size:12px;margin-top:4px">
+      Canal sem segmento fica ocioso: a distribuição casa o <em>segmento do episódio</em>
+      com o <em>segmento do canal</em>. Sem isso, nada é agendado.
+    </div>
+    {% endif %}
+  </div>
   <p class="muted" style="margin-bottom:14px">
     Cada canal é uma conta de destino (um canal do YouTube, um perfil do TikTok…),
     com <strong>credenciais próprias</strong>. Publique o mesmo corte em vários canais
@@ -46,9 +59,15 @@
         </select>
       </td>
       <td>
+        {# Sem segmento o canal NAO recebe corte nenhum, mesmo conectado. E a
+           causa mais comum de "esta tudo verde e nada e publicado", entao o
+           campo vazio fica marcado em vermelho em vez de passar despercebido. #}
         <input type="text" name="niche" value="{{ ch.niche or '' }}" form="chE{{ ch.id }}"
-               placeholder="segmento" style="width:130px"
+               placeholder="obrigatório" style="width:130px{% if not ch.niche %};border-color:var(--err){% endif %}"
                title="episodios deste segmento roteiam os cortes para ca">
+        {% if not ch.niche %}
+        <div style="color:var(--err);font-size:11px;margin-top:2px">não recebe cortes</div>
+        {% endif %}
       </td>
       <td>
         <input type="number" name="posts_per_day" value="{{ ch.posts_per_day }}" form="chE{{ ch.id }}"

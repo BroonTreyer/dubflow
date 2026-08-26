@@ -179,6 +179,19 @@ def dashboard(request: Request):
                         if ch["platform"] == "youtube" else None),
                 "url": f"/channels/{ch['id']}",
             })
+    # Canal conectado mas SEM segmento fica ocioso — a distribuicao casa o segmento
+    # do episodio com o do canal. Sem este aviso, o painel mostra tudo verde e
+    # nenhum corte e publicado, sem explicar por que.
+    ociosos = [ch for ch in channels
+               if channel_ready[ch["id"]] and not (ch.get("niche") or "").strip()]
+    if ociosos:
+        nomes = ", ".join(ch["name"] for ch in ociosos[:3])
+        resto = f" +{len(ociosos) - 3}" if len(ociosos) > 3 else ""
+        attention.append({
+            "text": f"{len(ociosos)} canal(is) conectado(s) sem segmento ({nomes}{resto}) — "
+                    "não recebem cortes até preencher.",
+            "cmd": None, "url": "/channels"})
+
     episodes = db.list_episodes()
     n_failed = sum(1 for e in episodes if e["status"] == "failed")
     if n_failed:
