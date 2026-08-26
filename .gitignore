@@ -11,3 +11,6 @@ tests/_tmp/
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Backups do .env (contem chaves)
+.env.bak-*
