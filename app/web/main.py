@@ -10,6 +10,7 @@ que precisa ser alcancavel pela Meta — protegida por HMAC em vez de login.
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -532,6 +533,48 @@ def retry_episode(request: Request, episode_id: int, csrf: str = Form("")):
         )
     db.update_episode(episode_id, status="queued", progress=0, error=None)
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
+
+
+@app.post("/episodes/{episode_id}/delete", dependencies=panel)
+def delete_episode(request: Request, episode_id: int, csrf: str = Form("")):
+    """Apaga o episodio: registro, cortes, publicacoes e arquivos em disco.
+
+    Recusa episodio EM EXECUCAO: apagar os arquivos embaixo do worker deixaria
+    ele escrevendo num diretorio que nao existe mais. Cancele ou espere terminar.
+    """
+    security.require_csrf(request, csrf)
+    episode = db.get_episode(episode_id)
+    if episode is None:
+        raise HTTPException(404, "episodio nao encontrado")
+    if episode["status"] not in RETRYABLE:
+        raise HTTPException(
+            409,
+            f"episodio esta em '{episode['status']}' — o worker ainda esta nele. "
+            "Espere terminar ou falhar antes de apagar.",
+        )
+
+    removido = db.delete_episode(episode_id)
+
+    # Arquivos: o diretorio do episodio e o do acervo. Best-effort e sempre DEPOIS
+    # do banco — se o disco falhar, o registro ja saiu e nao fica orfao na tela.
+    apagados = []
+    alvos = [settings.data_dir / "episodes" / f"ep_{episode_id:05d}"]
+    arquivo = (episode.get("paths") or {}).get("archive_dir")
+    if arquivo:
+        alvos.append(Path(arquivo))
+    for alvo in alvos:
+        try:
+            resolvido = alvo.resolve()
+            # Nunca apagar fora de data/: um paths adulterado nao vira rm -rf.
+            if resolvido.is_relative_to(settings.data_dir.resolve()) and resolvido.is_dir():
+                shutil.rmtree(resolvido, ignore_errors=True)
+                apagados.append(resolvido.name)
+        except (OSError, ValueError) as exc:
+            log.warning("episodio %s: nao consegui apagar %s (%s)", episode_id, alvo, exc)
+
+    log.info("episodio %s apagado: %d corte(s), %d publicado(s), pastas: %s",
+             episode_id, removido["clips"], removido["published"], apagados or "nenhuma")
+    return RedirectResponse("/?apagado=%d" % episode_id, status_code=303)
 
 
 @app.post("/episodes/{episode_id}/action", dependencies=panel)

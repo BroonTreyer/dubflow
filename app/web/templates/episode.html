@@ -49,6 +49,19 @@
   </form>
   {% endif %}
 
+  {% if episode.status in ('failed', 'done', 'canceled') %}
+  <form method="post" action="/episodes/{{ episode.id }}/delete" style="margin-top:10px"
+        onsubmit="return confirm('Apagar este episodio, os {{ clips | length }} corte(s) e os arquivos em disco? Nao da para desfazer.')">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="ghost" style="color:#c62828;border-color:#c62828">
+      Apagar episodio
+    </button>
+    <span class="muted" style="font-size:12px;margin-left:8px">
+      remove cortes, capas e o vídeo baixado
+    </span>
+  </form>
+  {% endif %}
+
   <div class="row" style="margin-top:14px">
     {% if episode.paths.srt %}<a href="/download/{{ episode.id }}/srt">baixar legenda .srt</a>{% endif %}
     {% if episode.paths.translated %}<a href="/download/{{ episode.id }}/translated">transcrição traduzida</a>{% endif %}

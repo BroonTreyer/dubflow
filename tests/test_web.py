@@ -628,6 +628,44 @@ def main() -> int:
     check("arquivo novo muda a url (cache do navegador nao acerta)",
           media_url(nome) != u1, (u1, media_url(nome)))
 
+    print("apagar episodio")
+    ep_del = db.create_episode("https://youtu.be/apagar", "owned")
+    ids = db.replace_clips(ep_del, [{"start": 0, "end": 30, "title": "x", "caption": "c",
+                                     "score": 8}])
+    db.update_clip(ids[0], path=str(_tmp / "d.mp4"), status="ready")
+    db.create_post(ids[0], "youtube") if hasattr(db, "create_post") else None
+    pasta = settings.data_dir / "episodes" / f"ep_{ep_del:05d}"
+    (pasta / "clips").mkdir(parents=True, exist_ok=True)
+    (pasta / "source.mp4").write_bytes(b"video")
+    db.update_episode(ep_del, status="done")
+
+    tok = csrf_of(client)
+    r_del = client.post(f"/episodes/{ep_del}/delete", data={"csrf": tok},
+                        follow_redirects=False)
+    check("delete redireciona para a fila", r_del.status_code == 303, r_del.status_code)
+    check("episodio sai do banco", db.get_episode(ep_del) is None)
+    check("cortes somem junto (CASCADE)", db.list_clips(ep_del) == [])
+    check("arquivos em disco tambem somem", not pasta.exists(), pasta)
+
+    # Sem CSRF nao apaga: e destrutivo e nao pode ser disparado de outro site.
+    ep_csrf = db.create_episode("https://youtu.be/csrf", "owned")
+    db.update_episode(ep_csrf, status="done")
+    r_semtok = client.post(f"/episodes/{ep_csrf}/delete", data={"csrf": "errado"},
+                           follow_redirects=False)
+    check("sem csrf valido nao apaga", r_semtok.status_code >= 400, r_semtok.status_code)
+    check("episodio continua la", db.get_episode(ep_csrf) is not None)
+
+    # Episodio EM EXECUCAO nao pode ser apagado embaixo do worker.
+    db.update_episode(ep_csrf, status="transcribing")
+    r_run = client.post(f"/episodes/{ep_csrf}/delete", data={"csrf": tok},
+                        follow_redirects=False)
+    check("episodio rodando e recusado", r_run.status_code == 409, r_run.status_code)
+    check("e continua no banco", db.get_episode(ep_csrf) is not None)
+
+    check("inexistente da 404",
+          client.post("/episodes/99999/delete", data={"csrf": tok},
+                      follow_redirects=False).status_code == 404)
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")

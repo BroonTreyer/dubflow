@@ -887,6 +887,33 @@ def update_channel(channel_id: int, **fields: Any) -> None:
         )
 
 
+def delete_episode(episode_id: int) -> dict[str, Any]:
+    """Apaga o episodio e tudo que dependia dele. Devolve o que foi removido.
+
+    Clips e posts saem por ON DELETE CASCADE (foreign_keys=ON esta ligado em
+    `connect`). Os ARQUIVOS em disco nao saem daqui — quem apaga e a camada web,
+    que sabe resolver os caminhos; assim esta funcao continua testavel sem tocar
+    no sistema de arquivos.
+    """
+    with connect() as conn:
+        row = conn.execute("SELECT source_url, title FROM episodes WHERE id = ?",
+                           (episode_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"episodio {episode_id} nao existe")
+        n_clips = conn.execute("SELECT COUNT(*) FROM clips WHERE episode_id = ?",
+                               (episode_id,)).fetchone()[0]
+        # Post ja publicado tem permalink: o video continua no ar mesmo depois de
+        # apagar o registro aqui. O chamador avisa; a decisao e do usuario.
+        publicados = conn.execute(
+            "SELECT COUNT(*) FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " WHERE c.episode_id = ? AND p.permalink IS NOT NULL AND p.permalink != ''",
+            (episode_id,),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM episodes WHERE id = ?", (episode_id,))
+    return {"id": episode_id, "title": row["title"], "source_url": row["source_url"],
+            "clips": n_clips, "published": publicados}
+
+
 def delete_channel(channel_id: int) -> None:
     """Remove o canal. Os posts ja publicados por ele mantêm o historico
     (channel_id vira NULL via ON DELETE SET NULL)."""

@@ -44,7 +44,7 @@
   <h2>Fila e historico</h2>
   {% if episodes %}
   <table>
-    <tr><th>#</th><th>Titulo</th><th>Canal</th><th>Estado</th><th>Progresso</th><th>Licenca</th></tr>
+    <tr><th>#</th><th>Titulo</th><th>Canal</th><th>Estado</th><th>Progresso</th><th>Licenca</th><th></th></tr>
     {% for ep in episodes %}
     <tr data-id="{{ ep.id }}">
       <td class="muted">{{ ep.id }}</td>
@@ -64,6 +64,18 @@
         </div>
       </td>
       <td class="muted">{{ ep.license_status }}</td>
+      <td>
+        {# Episodio em execucao nao pode ser apagado: o worker esta escrevendo
+           nos arquivos. A rota tambem recusa, isto so esconde o botao. #}
+        {% if ep.status in ('failed', 'done', 'canceled') %}
+        <form method="post" action="/episodes/{{ ep.id }}/delete"
+              onsubmit="return confirm('Apagar o episodio {{ ep.id }} e TODOS os cortes dele? Os arquivos em disco tambem serao removidos. Nao da para desfazer.')">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="ghost" title="apagar episodio e arquivos"
+                  style="color:#c62828;padding:2px 8px;font-size:12px">apagar</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
