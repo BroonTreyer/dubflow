@@ -169,7 +169,7 @@
     <div>
       {% if clip.path %}
       {% set nome = clip.path.split('\\')[-1].split('/')[-1] %}
-      <video controls preload="metadata" src="/media/{{ media_sig(nome) }}/{{ nome }}"></video>
+      <video controls preload="metadata" src="{{ media_url(nome) }}"></video>
       {% else %}
       <div class="bar" style="height:120px;border-radius:8px"></div>
       {% endif %}
@@ -181,11 +181,11 @@
         {% if clip.path_wide %} · <span title="tem versão horizontal 16:9">16:9 ✓</span>{% endif %}
         {% if clip.thumb_path %}
         {% set tnome = clip.thumb_path.split('\\')[-1].split('/')[-1] %}
-        · <a href="/media/{{ media_sig(tnome) }}/{{ tnome }}" target="_blank">thumb 16:9</a>
+        · <a href="{{ media_url(tnome) }}" target="_blank">thumb 16:9</a>
         {% endif %}
         {% if clip.thumb_vertical_path %}
         {% set tvnome = clip.thumb_vertical_path.split('\\')[-1].split('/')[-1] %}
-        · <a href="/media/{{ media_sig(tvnome) }}/{{ tvnome }}" target="_blank">thumb 9:16</a>
+        · <a href="{{ media_url(tvnome) }}" target="_blank">thumb 9:16</a>
         {% endif %}
       </p>
       {% if clip.caption %}

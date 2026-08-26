@@ -605,6 +605,29 @@ def main() -> int:
     # A acao de reselecao precisa estar registrada, senao o painel a recusa.
     check("reselect_clips e uma acao valida", "reselect_clips" in db.ACTIONS, db.ACTIONS)
 
+    # Regressao: a URL do media e assinada so pelo NOME, e o nome se repete entre
+    # execucoes (limpar o acervo reinicia os ids). Sem revalidacao e sem versao, o
+    # navegador entregava o corte ANTIGO para o episodio novo.
+    print("media: cache nao pode servir o corte antigo")
+    nome = "ep00001_corte_01.mp4"
+    ep_m = settings.data_dir / "episodes" / "ep_00001" / "clips"
+    ep_m.mkdir(parents=True, exist_ok=True)
+    (ep_m / nome).write_bytes(b"conteudo novo")
+    assinada = f"/media/{security.media_signature(nome)}/{nome}"
+    r_media = client.get(assinada)
+    check("media responde", r_media.status_code == 200, r_media.status_code)
+    check("manda no-cache (forca revalidar)",
+          "no-cache" in r_media.headers.get("cache-control", ""),
+          r_media.headers.get("cache-control"))
+
+    from app.web.main import media_url
+    u1 = media_url(nome)
+    check("url carrega versao do arquivo", "?v=" in u1, u1)
+    import os as _os, time as _time
+    _os.utime(ep_m / nome, (_time.time() + 60, _time.time() + 60))
+    check("arquivo novo muda a url (cache do navegador nao acerta)",
+          media_url(nome) != u1, (u1, media_url(nome)))
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")

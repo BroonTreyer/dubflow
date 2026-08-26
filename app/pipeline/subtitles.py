@@ -219,6 +219,102 @@ SPLIT_GAP = 0.6
 MIN_CUE_SECONDS = 0.8  # tempo minimo de leitura, sem invadir a proxima legenda
 
 
+def split_oversized(cues: list[dict[str, Any]], max_chars: int,
+                    max_lines: int) -> list[dict[str, Any]]:
+    """Divide NO TEMPO a legenda que nao cabe na tela, em vez de empilhar linhas.
+
+    `_resegment` quebra onde ha pausa de silencio, mas fala corrida nao tem pausa:
+    no ep 1 um segmento de 360 caracteres durou 22,9 s inteiros. Como `wrap_text`
+    prefere abrir linha extra a estourar a largura, aquilo virou um bloco de 18
+    linhas que cobria a tela toda.
+
+    Aqui o criterio nao depende de pausa: se o texto passa do que cabe em
+    `max_lines x max_chars`, ele e repartido em pedacos, cada um com sua fatia do
+    tempo — proporcional ao tamanho, para a legenda continuar acompanhando a fala.
+    A quebra respeita palavra e prefere cair depois de pontuacao.
+    """
+    # 85% do teorico: texto real nao empacota perfeito nas linhas (palavra que nao
+    # cabe empurra a linha inteira), entao usar max_chars*max_lines cheio ainda
+    # deixava passar um bloco de 4 linhas num teto de 3.
+    capacidade = max(1, int(max_chars * max_lines * 0.85))
+    saida: list[dict[str, Any]] = []
+
+    for cue in cues:
+        texto = " ".join((cue.get("text") or "").split())
+        inicio, fim = float(cue["start"]), float(cue["end"])
+        if len(texto) <= capacidade:
+            saida.append({**cue, "text": texto})
+            continue
+
+        partes = _chunk_words(texto, capacidade)
+        # Estimar por caractere nao basta: o empacotamento depende de ONDE as
+        # palavras caem. Aqui a gente CONFERE o resultado no proprio wrap_text e
+        # reparte de novo o pedaco que ainda estourar — o teto vira garantia.
+        partes = _forcar_teto(partes, max_chars, max_lines)
+        total = sum(len(p) for p in partes) or 1
+        t = inicio
+        for parte in partes:
+            fatia = (fim - inicio) * len(parte) / total
+            saida.append({**cue, "start": round(t, 3),
+                          "end": round(min(t + fatia, fim), 3), "text": parte})
+            t += fatia
+    return saida
+
+
+def _forcar_teto(partes: list[str], max_chars: int, max_lines: int) -> list[str]:
+    """Reparte ao meio qualquer pedaco que ainda passe de `max_lines` na tela."""
+    saida: list[str] = []
+    fila = list(partes)
+    guarda = 0
+    while fila and guarda < 400:
+        guarda += 1
+        parte = fila.pop(0)
+        palavras = parte.split()
+        if len(palavras) < 2 or len(wrap_text(parte, max_chars, max_lines).split("\n")) <= max_lines:
+            saida.append(parte)
+            continue
+        meio = len(palavras) // 2
+        fila.insert(0, " ".join(palavras[meio:]))
+        fila.insert(0, " ".join(palavras[:meio]))
+    return saida + fila
+
+
+def _chunk_words(texto: str, capacidade: int) -> list[str]:
+    """Reparte o texto em pedacos de ate `capacidade`, cortando entre palavras.
+
+    Fecha o pedaco assim que passar de 60% da capacidade E a palavra terminar em
+    pontuacao: uma legenda que termina em virgula/ponto le muito melhor que uma
+    cortada no meio da oracao.
+    """
+    palavras = texto.split()
+    partes: list[str] = []
+    atual: list[str] = []
+    tamanho = 0
+
+    for palavra in palavras:
+        extra = len(palavra) + (1 if atual else 0)
+        if atual and tamanho + extra > capacidade:
+            partes.append(" ".join(atual))
+            atual, tamanho = [palavra], len(palavra)
+            continue
+        atual.append(palavra)
+        tamanho += extra
+        if tamanho >= capacidade * 0.6 and palavra[-1:] in ",.;:!?":
+            partes.append(" ".join(atual))
+            atual, tamanho = [], 0
+
+    if atual:
+        partes.append(" ".join(atual))
+
+    # Sobra minuscula no fim vira legenda-relampago ("periodo." por 0,3s). Junta
+    # com a anterior desde que caiba — ler pela metade e melhor que piscar.
+    if len(partes) > 1 and len(partes[-1]) < capacidade * 0.25:
+        junto = f"{partes[-2]} {partes[-1]}"
+        if len(junto) <= capacidade * 1.15:
+            partes[-2:] = [junto]
+    return partes or [texto]
+
+
 def _resegment(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Re-corta as legendas usando os timestamps por palavra.
 
@@ -282,7 +378,9 @@ def _resegment(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def write_srt(segments: list[dict[str, Any]], path: Path) -> Path:
     lines = []
-    for i, seg in enumerate(_resegment(_usable(segments)), start=1):
+    cues = split_oversized(_resegment(_usable(segments)),
+                           MAX_CHARS_PER_LINE, MAX_LINES)
+    for i, seg in enumerate(cues, start=1):
         lines.append(str(i))
         lines.append(f"{_fmt_srt(seg['start'])} --> {_fmt_srt(seg['end'])}")
         lines.append(wrap_text(seg["text"]))
@@ -316,7 +414,9 @@ Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackC
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     events = []
-    for seg in _resegment(_usable(segments)):
+    # O teto de tela vale para os dois estilos: sem ele, fala corrida sem pausa
+    # vira um bloco que cobre o quadro (ep 1: 360 chars em 22,9s = 18 linhas).
+    for seg in split_oversized(_resegment(_usable(segments)), max_chars, max_lines):
         if karaoke:
             text = _karaoke_text(seg["text"], seg["start"], seg["end"], max_chars, max_lines)
         else:

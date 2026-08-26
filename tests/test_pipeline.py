@@ -51,6 +51,53 @@ def test_wrap() -> None:
     check("abriu terceira linha", len(longo.split("\n")) >= 3, len(longo.split("\n")))
 
 
+def test_subtitle_screen_cap() -> None:
+    """Legenda nunca pode cobrir a tela.
+
+    No ep 1 um segmento de 360 caracteres durou 22,9s sem pausa: como wrap_text
+    prefere abrir linha extra a estourar a largura, virou um bloco de 18 linhas.
+    Fala corrida tem que ser dividida NO TEMPO, nao empilhada.
+    """
+    print("legendas / teto de tela")
+
+    longo = ("Vou falar abertamente como jurista que eu acho que o STF tem que "
+             "voltar a ser uma casa constitucional e nao um tribunal politico, "
+             "porque a gente precisa de estabilidade juridica para o pais crescer "
+             "e gerar emprego de verdade para todo mundo agora.")
+    cue = [{"start": 100.0, "end": 122.9, "text": longo}]
+
+    for mc, ml in ((subtitles.CLIP_MAX_CHARS_PER_LINE, subtitles.CLIP_MAX_LINES),
+                   (subtitles.MAX_CHARS_PER_LINE, subtitles.MAX_LINES)):
+        partes = subtitles.split_oversized(cue, mc, ml)
+        check(f"divide em varias legendas ({mc}x{ml})", len(partes) > 1, len(partes))
+        estouros = [p for p in partes
+                    if len(subtitles.wrap_text(p["text"], mc, ml).split("\n")) > ml]
+        check(f"nenhum bloco passa de {ml} linhas", not estouros,
+              [p["text"] for p in estouros])
+        check(f"nenhuma linha passa de {mc} colunas ({mc}x{ml})",
+              all(len(l) <= mc for p in partes
+                  for l in subtitles.wrap_text(p["text"], mc, ml).split("\n")))
+
+        # O tempo tem que continuar cobrindo o mesmo trecho, em ordem e sem furo.
+        check("comeca junto com a fala", abs(partes[0]["start"] - 100.0) < 0.01)
+        check("termina junto com a fala", abs(partes[-1]["end"] - 122.9) < 0.05,
+              partes[-1]["end"])
+        check("em ordem e sem sobreposicao",
+              all(partes[i]["end"] <= partes[i + 1]["start"] + 0.01
+                  for i in range(len(partes) - 1)))
+        check("nao perde nem inventa palavra",
+              " ".join(p["text"] for p in partes).split() == longo.split())
+        # Legenda-relampago cansa e nao da tempo de ler.
+        check("sem legenda abaixo de 0,3s",
+              all(p["end"] - p["start"] >= 0.3 for p in partes),
+              [round(p["end"] - p["start"], 2) for p in partes])
+
+    # Texto que ja cabe passa intacto.
+    curto = [{"start": 0.0, "end": 2.0, "text": "Frase curta."}]
+    igual = subtitles.split_oversized(curto, 42, 2)
+    check("texto que cabe nao e mexido", len(igual) == 1 and igual[0]["text"] == "Frase curta.")
+
+
 def test_timestamps() -> None:
     print("legendas / timestamps")
     check("srt", subtitles._fmt_srt(3661.5) == "01:01:01,500", subtitles._fmt_srt(3661.5))
@@ -1067,6 +1114,7 @@ def main() -> int:
     tmp.mkdir(exist_ok=True)
 
     test_wrap()
+    test_subtitle_screen_cap()
     test_timestamps()
     test_ffmpeg_escape()
     test_srt_output(tmp)

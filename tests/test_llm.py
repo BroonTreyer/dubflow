@@ -101,8 +101,12 @@ def test_classificacao() -> None:
 
     cat, cooldown = llm.classify(FakeStatusError(TETO_ANTHROPIC, 400))
     check("teto da Anthropic e bloqueio duro", cat == llm.HARD, cat)
-    # O erro diz a data; o cooldown tem que ir ate la, nao os 60 min padrao.
-    check("cooldown segue a data informada pela API", cooldown > 60 * 60 * 24, cooldown)
+    # A data informada pela API deixa de valer quando alguem aumenta o limite da
+    # conta. Sem teto, o sistema ignorou a Anthropic por 6 dias depois de liberada.
+    check("cooldown nunca passa do teto", cooldown <= llm.HARD_COOLDOWN_MAX, cooldown)
+    check("mas ainda castiga por um tempo util", cooldown >= 60 * 30, cooldown)
+    check("o teto e curto o bastante para redescobrir no mesmo dia",
+          llm.HARD_COOLDOWN_MAX <= 6 * 3600, llm.HARD_COOLDOWN_MAX)
 
     cat_oa, _ = llm.classify(FakeStatusError(QUOTA_OPENAI, 429))
     check("quota da OpenAI e bloqueio duro", cat_oa == llm.HARD, cat_oa)
@@ -115,10 +119,22 @@ def test_classificacao() -> None:
           llm.classify(FakeStatusError("invalid schema: additionalProperties", 400))[0]
           == llm.FATAL)
 
-    # Sem a data, cai no padrao configuravel.
+    # Sem a data, cai no padrao configuravel (tambem limitado pelo teto).
     _, padrao = llm.classify(FakeStatusError("credit balance is too low", 400))
     check("sem data usa o cooldown padrao",
-          abs(padrao - settings.llm_block_cooldown_minutes * 60) < 1, padrao)
+          abs(padrao - min(settings.llm_block_cooldown_minutes * 60,
+                           llm.HARD_COOLDOWN_MAX)) < 1, padrao)
+
+    # Destravar na mao depois de aumentar o limite da conta.
+    a = FakeProvider("anthropic", erro=FakeStatusError(TETO_ANTHROPIC, 400))
+    b = FakeProvider("openai")
+    usar(a, b)
+    llm.call_json(llm.ROLE_CLIP, "s", "u", {})
+    check("provedor fica marcado como fora",
+          any(not p["available"] for p in llm.status()))
+    llm.clear_health()
+    check("clear_health devolve todo mundo para a fila",
+          all(p["available"] for p in llm.status()), llm.status())
 
 
 def test_failover() -> None:

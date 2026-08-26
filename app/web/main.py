@@ -218,6 +218,7 @@ def dashboard(request: Request):
         "attention": attention,
         "providers": provedores,
         "media_sig": security.media_signature,
+            "media_url": media_url,
     })
 
 
@@ -486,6 +487,7 @@ def episode_detail(request: Request, episode_id: int, duplicado: int = 0):
             "csrf": security.csrf_token(request),
             "duplicado": bool(duplicado),
             "media_sig": security.media_signature,
+            "media_url": media_url,
         },
     )
 
@@ -723,6 +725,22 @@ def api_catalog(include_unlicensed: bool = False):
 # --------------------------------------------------------------------------- arquivos
 
 
+def media_url(name: str) -> str:
+    """URL do arquivo com a versao embutida (`?v=<mtime>`).
+
+    A assinatura cobre so o NOME, e o nome se repete entre execucoes: depois de
+    limpar o acervo os ids reiniciam e o episodio novo herda a URL exata do
+    antigo. O `?v` muda quando o arquivo muda, entao o navegador nem chega a
+    consultar o cache velho — o Cache-Control da rota cobre o resto.
+    """
+    try:
+        d = _episode_dir_from_clip_name(name)
+        mtime = int((d / "clips" / name).stat().st_mtime) if d else 0
+    except OSError:
+        mtime = 0
+    return f"/media/{security.media_signature(name)}/{name}?v={mtime}"
+
+
 @app.get("/media/{signature}/{filename}")
 def media(signature: str, filename: str):
     """Serve os cortes renderizados — usado pelo Instagram, que busca por URL.
@@ -747,7 +765,16 @@ def media(signature: str, filename: str):
     if not resolved.is_relative_to(root) or not resolved.is_file():
         raise HTTPException(404, "arquivo nao encontrado")
     media_type = "image/jpeg" if resolved.suffix.lower() in (".jpg", ".jpeg") else "video/mp4"
-    return FileResponse(resolved, media_type=media_type)
+    # `no-cache` nao significa "nao guarde": significa "revalide sempre". E
+    # obrigatorio aqui porque a URL depende so do NOME do arquivo, e o nome se
+    # repete entre execucoes — depois de limpar o acervo os ids reiniciam, o
+    # episodio novo vira ep_00001 e seus cortes herdam a URL exata dos antigos.
+    # Sem este cabecalho o navegador usa cache heuristico, nao revalida, e entrega
+    # o video ANTIGO para o episodio novo. O ETag (mtime+tamanho) faz o resto.
+    return FileResponse(
+        resolved, media_type=media_type,
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 def _episode_dir_from_clip_name(name: str) -> Path | None:

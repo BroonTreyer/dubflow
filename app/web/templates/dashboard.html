@@ -168,7 +168,7 @@
       {% for p in day.posts %}
       <div class="slot">
         {% set tn = tname(p) | trim %}
-        {% if tn %}<img src="/media/{{ media_sig(tn) }}/{{ tn }}" alt="" loading="lazy">
+        {% if tn %}<img src="{{ media_url(tn) }}" alt="" loading="lazy">
         {% else %}<div class="ph"></div>{% endif %}
         <div>
           <div class="t">{{ p.scheduled_at[11:16] }} · {{ p.channel_name or 'global' }}</div>
@@ -199,7 +199,7 @@
     <div class="c">
       <a href="/episodes/{{ clip.episode_id }}">
         {% set tn = tname(clip) | trim %}
-        {% if tn %}<img src="/media/{{ media_sig(tn) }}/{{ tn }}" alt="" loading="lazy">
+        {% if tn %}<img src="{{ media_url(tn) }}" alt="" loading="lazy">
         {% else %}<div class="ph">sem thumb</div>{% endif %}
       </a>
       <p style="margin:8px 0 2px;font-size:13px;font-weight:600;line-height:1.3">

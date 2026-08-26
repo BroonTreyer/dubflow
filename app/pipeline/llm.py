@@ -50,6 +50,11 @@ ROLE_SCAN = "scan"
 
 HARD, TRANSIENT, FATAL = "hard", "transient", "fatal"
 
+# Teto do castigo de um provedor bloqueado. Existe porque a data que a API informa
+# ("regain access on ...") deixa de valer assim que alguem aumenta o limite da
+# conta — sem teto, o sistema fica cego para uma chave que ja voltou.
+HARD_COOLDOWN_MAX = 2 * 60 * 60   # 2 horas
+
 
 class AllProvidersDown(RuntimeError):
     """Nenhum provedor disponivel. E erro de verdade: o episodio deve falhar.
@@ -156,10 +161,16 @@ class _Health:
                 for nome, st in self._states.items()
             }
 
-    def clear(self) -> None:
-        """So para os testes."""
+    def clear(self, persist: bool = False) -> None:
+        """Zera todos os castigos (usado por clear_health e pelos testes).
+
+        `persist` grava o estado limpo: sem isso o arquivo antigo e relido no
+        proximo start e o provedor volta a ser considerado bloqueado.
+        """
         with self._lock:
             self._states = {}
+            if persist:
+                self._save()
 
 
 _health = _Health()
@@ -193,17 +204,27 @@ _HARD_MARKERS = (
 
 
 def _hard_cooldown(msg: str) -> float:
-    """Quanto tempo deixar o provedor de lado, em segundos."""
+    """Quanto tempo deixar o provedor de lado, em segundos.
+
+    A data que a API informa ("regain access on ...") e um palpite bom, nao uma
+    verdade: ela para de valer no instante em que alguem aumenta o limite da conta.
+    Confiar nela cegamente fez o sistema ignorar a Anthropic por 6 dias depois de
+    ela ja estar liberada.
+
+    Por isso o teto: mesmo num bloqueio longo, o provedor volta a ser sondado de
+    tempos em tempos. Se continuar bloqueado, custa UMA chamada recusada e ele e
+    marcado de novo — barato perto de ficar cego para uma chave que voltou.
+    """
     m = _REGAIN.search(msg)
     if m:
         try:
             volta = datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}:00+00:00")
             faltam = (volta - datetime.now(timezone.utc)).total_seconds()
             # +1 min de folga para nao acordar exatamente no segundo da virada.
-            return max(faltam + 60, 60)
+            return max(min(faltam + 60, HARD_COOLDOWN_MAX), 60)
         except ValueError:
             pass
-    return settings.llm_block_cooldown_minutes * 60
+    return min(settings.llm_block_cooldown_minutes * 60, HARD_COOLDOWN_MAX)
 
 
 def _isinstance_any(exc: BaseException, nomes: tuple[str, ...]) -> bool:
@@ -381,6 +402,13 @@ def providers() -> list[Provider]:
         if _providers_cache is None:
             _providers_cache = _build_providers()
         return _providers_cache
+
+
+def clear_health() -> None:
+    """Zera o castigo de todos os provedores. Use depois de aumentar o limite de
+    uma conta: sem isso o sistema espera o cooldown vencer para redescobrir."""
+    _health.clear(persist=True)
+    log.info("saude dos provedores zerada — todos voltam a ser tentados")
 
 
 def reset(providers_override: list[Provider] | None = None) -> None:
