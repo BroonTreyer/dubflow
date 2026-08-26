@@ -43,7 +43,8 @@ EPISODE_COLUMNS = {
 ACTIONS = ("burn", "rerender_clips", "distribute")
 CLIP_COLUMNS = {"idx", "start", "end", "title", "hook", "caption", "yt_title",
                 "yt_description", "score", "path", "path_wide", "thumb_path",
-                "thumb_vertical_path", "thumb_text", "status"}
+                "thumb_vertical_path", "thumb_text", "thumb_time", "thumb_badge",
+                "thumb_image_prompt", "status"}
 POST_COLUMNS = {"platform", "orientation", "status", "remote_id", "permalink", "error",
                 "scheduled_at", "posted_at", "attempts",
                 "views", "likes", "comments", "stats_at"}
@@ -101,6 +102,10 @@ CREATE TABLE IF NOT EXISTS clips (
     thumb_path     TEXT,
     thumb_vertical_path TEXT,
     thumb_text     TEXT,
+    -- Instante (segundos, escala do episodio) que a IA apontou como capa.
+    thumb_time     REAL,
+    thumb_badge    TEXT,
+    thumb_image_prompt TEXT,
     status         TEXT NOT NULL DEFAULT 'pending',
     created_at     TEXT NOT NULL
 );
@@ -274,6 +279,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_vertical_path TEXT")
         if "thumb_text" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN thumb_text TEXT")
+        if "thumb_time" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_time REAL")
+        if "thumb_badge" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_badge TEXT")
+        if "thumb_image_prompt" not in clip_columns:
+            conn.execute("ALTER TABLE clips ADD COLUMN thumb_image_prompt TEXT")
         if "yt_title" not in clip_columns:
             conn.execute("ALTER TABLE clips ADD COLUMN yt_title TEXT")
         if "yt_description" not in clip_columns:
@@ -468,9 +479,14 @@ def replace_clips(episode_id: int, clips: list[dict[str, Any]]) -> list[int]:
         ids = []
         for idx, clip in enumerate(clips):
             cur = conn.execute(
+                # thumb_text/thumb_time faltavam aqui: a IA gerava os dois e o INSERT
+                # os descartava em silencio, entao toda capa saia sem texto e com o
+                # frame escolhido so por nitidez. Ao acrescentar campo ao schema dos
+                # cortes, acrescente TAMBEM nesta lista.
                 "INSERT INTO clips (episode_id, idx, start, end, title, hook, caption,"
-                " yt_title, yt_description, score, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " yt_title, yt_description, thumb_text, thumb_time, thumb_badge,"
+                " thumb_image_prompt, score, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     episode_id,
                     idx,
@@ -481,6 +497,10 @@ def replace_clips(episode_id: int, clips: list[dict[str, Any]]) -> list[int]:
                     clip.get("caption"),
                     clip.get("yt_title"),
                     clip.get("yt_description"),
+                    clip.get("thumb_text"),
+                    clip.get("thumb_time"),
+                    clip.get("thumb_badge"),
+                    clip.get("thumb_image_prompt"),
                     clip.get("score"),
                     ts,
                 ),

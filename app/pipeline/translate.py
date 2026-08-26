@@ -22,6 +22,7 @@ from typing import Any, Callable
 import anthropic
 
 from app.config import TARGET_LANGUAGES, settings
+from app.pipeline import llm
 
 log = logging.getLogger(__name__)
 
@@ -209,31 +210,23 @@ def _user_content(
     )
 
 
-def _call_claude(client: anthropic.Anthropic, user_text: str, target_lang: str = "pt-BR",
-                 max_tokens: int = 16000):
-    return client.messages.create(
-        model=settings.translate_model,
+def _call_llm(user_text: str, target_lang: str = "pt-BR", max_tokens: int = 16000):
+    """Um bloco de traducao. O failover entre provedores mora na camada llm."""
+    return llm.call_json(
+        llm.ROLE_TRANSLATE,
+        _system_prompt(target_lang),
+        user_text,
+        RESPONSE_SCHEMA,
         max_tokens=max_tokens,
-        system=[
-            {
-                "type": "text",
-                "text": _system_prompt(target_lang),
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        output_config={
-            "effort": settings.translate_effort,
-            "format": {"type": "json_schema", "schema": RESPONSE_SCHEMA},
-        },
-        messages=[{"role": "user", "content": user_text}],
+        effort=settings.translate_effort,
+        cache_system=True,
     )
 
 
-def _parse(response) -> dict[int, str]:
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    if not text.strip():
+def _parse(result: llm.LLMResult) -> dict[int, str]:
+    if not result.text.strip():
         raise ValueError("resposta sem conteudo de texto")
-    data = json.loads(text)
+    data = json.loads(result.text)
     return {int(item["id"]): item["text"].strip() for item in data.get("segments", [])}
 
 
@@ -282,7 +275,11 @@ def translate_segments(
             on_progress(1.0, "sem traducao (mesmo idioma)")
         return passthrough(segments)
 
-    client = _client()
+    if not llm.providers():
+        raise RuntimeError(
+            "Nenhum provedor de IA configurado. Preencha ANTHROPIC_API_KEY ou "
+            "OPENAI_API_KEY no .env."
+        )
     blocks = _build_blocks(segments)
     translated: dict[int, str] = {}
     context_tail: list[str] = []
@@ -291,7 +288,7 @@ def translate_segments(
 
     for block_idx, block in enumerate(blocks):
         user_text = _user_content(block, context_tail, meta, glossary or {})
-        result = _translate_block_with_retry(client, user_text, block, meta, glossary or {})
+        result = _translate_block_with_retry(user_text, block, meta, glossary or {})
         translated.update(result["texts"])
         for key in usage:
             usage[key] += result["usage"].get(key, 0)
@@ -337,65 +334,54 @@ def translate_segments(
 
 
 def _translate_block_with_retry(
-    client: anthropic.Anthropic,
     user_text: str,
     block: list[dict[str, Any]],
     meta: dict[str, Any],
     glossary: dict[str, str],
-    attempts: int = 3,
+    attempts: int = 2,
 ) -> dict[str, Any]:
+    """Traduz um bloco. Rede, 429 e troca de provedor ja sao tratados dentro de
+    llm.call_json; o retry daqui cobre so o que e especifico da traducao —
+    resposta que nao deu para ler."""
     last_error: Exception | None = None
 
     for attempt in range(attempts):
         try:
-            response = _call_claude(client, user_text, _target(meta))
+            r = _call_llm(user_text, _target(meta))
 
-            if response.stop_reason == "refusal":
+            if r.refusal:
                 # Conteudo que os classificadores recusaram: preserva o original
                 # em vez de derrubar o episodio inteiro.
                 log.warning("bloco recusado pelos classificadores; mantendo texto original")
-                return {
-                    "texts": {seg["id"]: seg["text"] for seg in block},
-                    "usage": _usage(response),
-                }
+                return {"texts": {seg["id"]: seg["text"] for seg in block}, "usage": r.usage}
 
-            if response.stop_reason == "max_tokens" and len(block) > 4:
+            if r.truncated and len(block) > 4:
                 # Bloco grande demais: divide ao meio e traduz cada metade.
                 mid = len(block) // 2
                 merged: dict[int, str] = {}
                 total = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
                 for half in (block[:mid], block[mid:]):
                     sub = _translate_block_with_retry(
-                        client, _user_content(half, [], meta, glossary), half, meta, glossary
+                        _user_content(half, [], meta, glossary), half, meta, glossary
                     )
                     merged.update(sub["texts"])
                     for key in total:
                         total[key] += sub["usage"].get(key, 0)
                 return {"texts": merged, "usage": total}
 
-            return {"texts": _parse(response), "usage": _usage(response)}
+            return {"texts": _parse(r), "usage": r.usage}
 
-        except (anthropic.RateLimitError, anthropic.APIConnectionError) as exc:
+        except llm.AllProvidersDown as exc:
+            # Nenhum provedor de pe. Insistir aqui so atrasa o episodio inteiro.
             last_error = exc
-            wait = 2 ** attempt * 5
-            log.warning("erro transitorio na traducao (%s); retry em %ss", type(exc).__name__, wait)
-            time.sleep(wait)
+            log.error("traducao sem provedor disponivel: %s", exc)
+            break
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
             log.warning("resposta invalida na traducao: %s", exc)
 
     log.error("bloco falhou apos %d tentativas: %s", attempts, last_error)
     return {"texts": {seg["id"]: seg["text"] for seg in block}, "usage": {}}
-
-
-def _usage(response) -> dict[str, int]:
-    u = response.usage
-    return {
-        "input": getattr(u, "input_tokens", 0) or 0,
-        "output": getattr(u, "output_tokens", 0) or 0,
-        "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
-        "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
-    }
 
 
 # --------------------------------------------------------------------------- batch

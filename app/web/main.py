@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from app import credentials, db, sales, security
 from app.config import MARKET_OPTIONS, TARGET_LANGUAGES, configure_logging, settings
-from app.pipeline import archive
+from app.pipeline import archive, llm
 from app.publishers import REGISTRY, status as publisher_status
 
 configure_logging("web")
@@ -193,6 +193,21 @@ def dashboard(request: Request):
         attention.append({"text": f"{stats['posts_failed']} publicação(ões) falharam.",
                           "cmd": None, "url": "/analytics"})
 
+    # Provedores de IA: um bloqueado nao para mais o pipeline, mas voce precisa
+    # ver — se os DOIS cairem, os episodios param de verdade.
+    provedores = llm.status()
+    fora = [p for p in provedores if not p["available"]]
+    if fora and len(fora) < len(provedores):
+        attention.append({
+            "text": f"IA: {', '.join(p['name'] for p in fora)} bloqueado(a) — "
+                    "o outro provedor está cobrindo.",
+            "cmd": None, "url": None})
+    elif fora:
+        attention.append({
+            "text": "IA: TODOS os provedores bloqueados — episódios vão falhar "
+                    "na seleção de cortes.",
+            "cmd": None, "url": None})
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "stats": stats,
         "accounts": accounts,
@@ -201,6 +216,7 @@ def dashboard(request: Request):
         "recent_clips": db.recent_clips(),
         "top_posts": db.analytics_posts(limit=8),
         "attention": attention,
+        "providers": provedores,
         "media_sig": security.media_signature,
     })
 

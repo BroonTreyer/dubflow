@@ -35,6 +35,12 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _list(name: str, default: str) -> list[str]:
+    """Lista separada por virgula, sem vazios e sem espacos."""
+    raw = os.getenv(name, "") or default
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 @dataclass
 class Settings:
     root: Path = ROOT
@@ -60,6 +66,35 @@ class Settings:
     # leitura rasa sobre uma amostra, entao roda no Haiku: barato e suficiente.
     clip_scan_model: str = os.getenv("CLIP_SCAN_MODEL", "claude-haiku-4-5-20251001")
     use_batch_api: bool = _bool("USE_BATCH_API", False)
+
+    # --- OpenAI ---
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_translate_model: str = os.getenv("OPENAI_TRANSLATE_MODEL", "gpt-5.5")
+    openai_clip_model: str = os.getenv("OPENAI_CLIP_MODEL", "gpt-5.5")
+    # Espelha o papel do Haiku do lado da Claude: leitura rasa, modelo pequeno.
+    openai_scan_model: str = os.getenv("OPENAI_SCAN_MODEL", "gpt-5.4-mini")
+
+    # --- capa (thumbnail) ---
+    # Imagem tematica de fundo, gerada por IA. O video fonte e podcast e nao tem
+    # b-roll proprio; sem isto a capa cai no frame inteiro do apresentador.
+    thumb_generate_image: bool = _bool("THUMB_GENERATE_IMAGE", True)
+    thumb_image_model: str = os.getenv("THUMB_IMAGE_MODEL", "gpt-image-2")
+    thumb_image_size: str = os.getenv("THUMB_IMAGE_SIZE", "1536x1024")
+
+    # --- distribuicao entre provedores de IA ---
+    # Ordem de preferencia. O primeiro com chave e o preferido; os demais cobrem
+    # quando ele cai. Inverta para gastar primeiro a outra conta.
+    llm_providers: list[str] = field(
+        default_factory=lambda: _list("LLM_PROVIDERS", "anthropic,openai")
+    )
+    # Tentativas por provedor antes de passar a bola (so para erro transitorio —
+    # teto estourado nao se repete, cai para o proximo na hora).
+    llm_max_retries: int = _int("LLM_MAX_RETRIES", 3)
+    # Chamadas simultaneas quando as tarefas sao repartidas entre os provedores.
+    llm_max_parallel: int = _int("LLM_MAX_PARALLEL", 4)
+    # Quanto tempo ignorar um provedor bloqueado quando ele NAO diz a hora da
+    # liberacao. Quando diz ("regain access on ..."), a data dele vale.
+    llm_block_cooldown_minutes: int = _int("LLM_BLOCK_COOLDOWN_MINUTES", 60)
 
     # --- cortes ---
     # A cota e proporcional a duracao: um episodio de 2h nao pode receber a mesma

@@ -12,14 +12,21 @@ import logging
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
 from app.config import settings
-from app.pipeline import subtitles
+from app.pipeline import llm, subtitles
+
+
+class NoClipsSelected(RuntimeError):
+    """Nenhuma janela devolveu corte.
+
+    Existe para que o runner reprove o episodio em vez de arquiva-lo como
+    concluido: em 25/08/2026 quatro episodios ficaram `done` com zero cortes
+    porque a falha da selecao era apenas um warning.
+    """
+
 
 log = logging.getLogger(__name__)
 
@@ -90,12 +97,29 @@ Chamativo mas honesto — nada de clickbait que o trecho nao entrega. Sem hashta
 - `yt_description`: descricao para o YouTube, em pt-BR. Duas ou tres frases: o que o \
 trecho mostra e por que vale assistir, seguidas de 3 a 6 hashtags relevantes em uma \
 linha. Escreva para busca — use os termos que o publico procuraria.
-- `thumb_text`: o texto que vai ESTAMPADO na capa, em pt-BR. Regra dura: no maximo \
-5 palavras, idealmente 3. Nao e o titulo resumido — e o gancho que faz parar o \
-scroll, lido em meio segundo a 3 cm de altura. Use a tensao do trecho: \
-"ELE NEGOU TUDO", "PERDEU R$ 2 MILHOES", "A PERGUNTA PROIBIDA". Sem ponto final, \
-sem aspas, sem hashtag, sem emoji. Marque com asteriscos a palavra (ou duas) que \
-deve sair colorida na capa: "ELE *MENTIU* NA CARA".
+- `thumb_text`: o texto ESTAMPADO na capa, em pt-BR e em caixa alta no efeito. \
+Entre 2 e 16 palavras — escolha o tamanho pelo trecho, nao por regra fixa: um \
+choque seco pede "E IMPOSSIVEL!"; uma revelacao com contexto pede a fala inteira, \
+como "VOU ATE ORAR AGORA, O EL NINO CHEGOU NO BRASIL, SABE O QUE VAI ACONTECER?". \
+Quando o trecho tem uma frase falada que ja e o gancho, PREFIRA cita-la quase \
+literalmente — soa humano e e o que performa neste nicho. NAO repita o `yt_title`: \
+o titulo informa, a capa provoca. Sem hashtag e sem emoji. Marque com asteriscos \
+as palavras que saem coloridas: "VOU TE *EXPLICAR* DE UMA VEZ POR TODAS".
+- `thumb_badge`: selo curto opcional, ate 3 palavras, tipo "TENSAO RECORDE", \
+"ALERTA", "EXCLUSIVO". String vazia quando o trecho nao pede.
+- `thumb_image_prompt`: prompt EM INGLES da imagem tematica que vai ao fundo da \
+capa, gerada por IA. Descreva a CENA do assunto, dramatica e concreta — "San Andreas \
+fault cracking through California desert, red warning glow, storm sky", "volcanic \
+eruption at night over a city skyline", "flooded Brazilian street with cars \
+submerged, dark clouds". Nunca peca pessoas, rosto, texto ou logotipo: o \
+apresentador real e sobreposto depois e texto gerado sai errado. Se o trecho for \
+abstrato demais para virar imagem, devolva string vazia.
+- `thumb_time`: o segundo EXATO que vira a capa, na mesma escala de `start`/`end`. \
+Nao chute o meio do corte: escolha o instante em que a emocao esta no rosto — a \
+reacao ao ouvir, o espanto, o riso, o momento em que a frase pesada cai. Se o \
+trecho e uma acusacao aos 3:12, a capa e a CARA de quem ouviu, nao a boca de quem \
+falou. Precisa cair dentro de [start, end]; na duvida, prefira logo depois da frase \
+mais forte, que e onde a reacao aparece.
 - `score`: 0 a 10, o quanto voce aposta que ESTE corte performa. Use a escala \
 inteira e seja duro: 9-10 e o corte que voce publicaria hoje, 7-8 e bom, 5-6 e \
 mediano, abaixo de 5 nao deveria ter sido escolhido. Varios cortes com nota \
@@ -149,10 +173,15 @@ CLIP_SCHEMA = {
                     "yt_title": {"type": "string"},
                     "yt_description": {"type": "string"},
                     "thumb_text": {"type": "string"},
+                    "thumb_badge": {"type": "string"},
+                    "thumb_image_prompt": {"type": "string"},
+                    "thumb_time": {"type": "number"},
                     "score": {"type": "number"},
                 },
                 "required": ["start", "end", "title", "hook", "caption",
-                             "yt_title", "yt_description", "thumb_text", "score"],
+                             "yt_title", "yt_description", "thumb_text",
+                             "thumb_badge", "thumb_image_prompt", "thumb_time",
+                             "score"],
                 "additionalProperties": False,
             },
         }
@@ -171,7 +200,7 @@ def target_count(duration_s: float) -> int:
     return int(min(alvo, settings.clips_max))
 
 
-def _detect_genre(client: anthropic.Anthropic, segments: list[dict[str, Any]],
+def _detect_genre(segments: list[dict[str, Any]],
                   meta: dict[str, Any]) -> dict[str, Any] | None:
     """Le uma amostra do episodio e devolve o que faz um corte DELE performar.
 
@@ -187,21 +216,17 @@ def _detect_genre(client: anthropic.Anthropic, segments: list[dict[str, Any]],
     amostra = textos[: min(60, n)] + textos[n // 2: n // 2 + 60] + textos[-60:]
 
     try:
-        response = client.messages.create(
-            model=settings.clip_scan_model,
+        r = llm.call_json(
+            llm.ROLE_SCAN,
+            GENRE_PROMPT,
+            (f"Titulo: {meta.get('title')}\nCanal: {meta.get('channel')}\n\n"
+             "Amostras da transcricao:\n" + "\n".join(amostra)),
+            GENRE_SCHEMA,
             max_tokens=1500,
-            system=[{"type": "text", "text": GENRE_PROMPT}],
-            output_config={"format": {"type": "json_schema", "schema": GENRE_SCHEMA}},
-            messages=[{
-                "role": "user",
-                "content": (f"Titulo: {meta.get('title')}\nCanal: {meta.get('channel')}\n\n"
-                            "Amostras da transcricao:\n" + "\n".join(amostra)),
-            }],
         )
-        if response.stop_reason == "refusal":
+        if r.refusal or not r.text.strip():
             return None
-        text = next((b.text for b in response.content if b.type == "text"), "")
-        return json.loads(text)
+        return r.json()
     except Exception as exc:  # o reconhecimento e um extra: sem ele a selecao ainda roda
         log.warning("deteccao de genero falhou (%s) — seguindo com criterios genericos", exc)
         return None
@@ -244,15 +269,17 @@ def _windows(segments: list[dict[str, Any]], count: int) -> list[tuple[list[dict
     return out
 
 
-def _select_window(client: anthropic.Anthropic, bloco: list[dict[str, Any]], cota: int,
-                   meta: dict[str, Any], genre_block: str) -> list[dict[str, Any]]:
+def _window_task(bloco: list[dict[str, Any]], cota: int, meta: dict[str, Any],
+                 genre_block: str) -> dict[str, Any] | None:
+    """Monta a tarefa de uma janela — quem a executa (e em qual provedor) e a
+    camada llm que decide."""
     transcript = [
         {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s.get("text") or ""}
         for s in bloco
         if (s.get("text") or "").strip()
     ]
     if not transcript:
-        return []
+        return None
 
     system = SELECTION_PROMPT.format(
         count=cota, genre_block=genre_block,
@@ -266,25 +293,8 @@ def _select_window(client: anthropic.Anthropic, bloco: list[dict[str, Any]], cot
         "Transcricao com timestamps (segundos, na escala do episodio inteiro):\n"
         "```json\n" + json.dumps(transcript, ensure_ascii=False) + "\n```"
     )
-
-    response = client.messages.create(
-        model=settings.clip_model,
-        max_tokens=16000,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        output_config={
-            "effort": "high",
-            "format": {"type": "json_schema", "schema": CLIP_SCHEMA},
-        },
-        messages=[{"role": "user", "content": user}],
-    )
-
-    if response.stop_reason == "refusal":
-        log.warning("selecao de cortes recusada pelos classificadores (minuto %d-%d)",
-                    ini_min, fim_min)
-        return []
-
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    return json.loads(text).get("clips", [])
+    return {"system": system, "user": user, "schema": CLIP_SCHEMA,
+            "max_tokens": 16000, "effort": "high", "janela": (ini_min, fim_min)}
 
 
 def select_clips(
@@ -292,42 +302,77 @@ def select_clips(
     meta: dict[str, Any],
     count: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Pede a Claude os melhores trechos do episodio, janela por janela."""
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY nao configurada.")
+    """Escolhe os melhores trechos do episodio, janela por janela.
+
+    As janelas sao independentes, entao a camada llm as reparte entre os
+    provedores saudaveis e roda todas ao mesmo tempo: com duas chaves, um
+    episodio de 4 janelas manda 2 para cada conta.
+
+    Levanta NoClipsSelected se NENHUMA janela voltou. Isso e proposital: um
+    episodio sem cortes e uma falha, e ja custou caro fingir que nao era.
+    """
+    if not llm.providers():
+        raise RuntimeError(
+            "Nenhum provedor de IA configurado. Preencha ANTHROPIC_API_KEY ou "
+            "OPENAI_API_KEY no .env."
+        )
     if not segments:
         return []
 
     duracao = max(float(s["end"]) for s in segments)
     count = count or target_count(duracao)
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    genre = _detect_genre(client, segments, meta)
+    genre = _detect_genre(segments, meta)
     if genre:
         log.info("cortes: formato reconhecido como '%s'", genre.get("genre"))
     genre_block = _genre_block(genre)
 
     janelas = _windows(segments, count)
-    log.info("cortes: alvo de %d em %.0f min, analisando em %d janela(s)",
-             count, duracao / 60, len(janelas))
+    tarefas = [t for t in (_window_task(bloco, cota, meta, genre_block)
+                           for bloco, cota in janelas) if t is not None]
+    if not tarefas:
+        return []
+
+    vivos = [p.name for p in llm.healthy()] or [p.name for p in llm.providers()]
+    log.info("cortes: alvo de %d em %.0f min, %d janela(s) entre %s",
+             count, duracao / 60, len(tarefas), ", ".join(vivos))
+
+    falhas: list[str] = []
+
+    def _falhou(i: int, exc: BaseException) -> None:
+        ini, fim = tarefas[i]["janela"]
+        falhas.append(f"minuto {ini}-{fim}: {exc}")
+        log.warning("janela %d-%d falhou em todos os provedores: %s", ini, fim, exc)
+
+    resultados = llm.map_json(llm.ROLE_CLIP, tarefas, cache_system=True, on_error=_falhou)
 
     bruto: list[dict[str, Any]] = []
-    if len(janelas) == 1:
-        bruto = _select_window(client, janelas[0][0], janelas[0][1], meta, genre_block)
-    else:
-        # Janelas sao independentes entre si, entao vao em paralelo — senao um
-        # episodio de 2h faria 7 chamadas de alto effort em fila.
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [
-                pool.submit(_select_window, client, bloco, cota, meta, genre_block)
-                for bloco, cota in janelas
-            ]
-            for fut in futures:
-                try:
-                    bruto.extend(fut.result())
-                except Exception as exc:
-                    # Uma janela que falha nao pode derrubar o episodio inteiro.
-                    log.warning("uma janela de selecao falhou (%s) — seguindo com as demais", exc)
+    por_provedor: dict[str, int] = {}
+    for i, r in enumerate(resultados):
+        if r is None:
+            continue
+        ini, fim = tarefas[i]["janela"]
+        if r.refusal:
+            log.warning("selecao recusada pelos classificadores (minuto %d-%d)", ini, fim)
+            continue
+        try:
+            bruto.extend(r.json().get("clips", []))
+        except (ValueError, AttributeError) as exc:
+            falhas.append(f"minuto {ini}-{fim}: resposta ilegivel ({exc})")
+            log.warning("janela %d-%d devolveu JSON invalido: %s", ini, fim, exc)
+            continue
+        por_provedor[r.provider] = por_provedor.get(r.provider, 0) + 1
+
+    if por_provedor:
+        log.info("cortes: janelas atendidas por %s",
+                 ", ".join(f"{k}={v}" for k, v in sorted(por_provedor.items())))
+
+    if not bruto:
+        # Antes isto virava um episodio "done" com zero cortes. Agora e falha.
+        raise NoClipsSelected(
+            f"nenhuma das {len(tarefas)} janelas devolveu cortes"
+            + (" — " + " | ".join(f[:160] for f in falhas[:4]) if falhas else "")
+        )
 
     return _sanitize(bruto, segments, count)
 
@@ -376,7 +421,10 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
                 "caption": (clip.get("caption") or "").strip()[:2000],
                 "yt_title": (clip.get("yt_title") or "").strip()[:100],
                 "yt_description": (clip.get("yt_description") or "").strip()[:4800],
-                "thumb_text": (clip.get("thumb_text") or "").strip()[:80],
+                "thumb_text": (clip.get("thumb_text") or "").strip()[:180],
+                "thumb_badge": (clip.get("thumb_badge") or "").strip()[:28],
+                "thumb_image_prompt": (clip.get("thumb_image_prompt") or "").strip()[:600],
+                "thumb_time": _thumb_time(clip.get("thumb_time"), start, end),
                 "score": float(clip.get("score") or 0),
             }
         )
@@ -387,6 +435,28 @@ def _sanitize(clips: list[dict[str, Any]], segments: list[dict[str, Any]],
 
     cleaned.sort(key=lambda c: c["start"])
     return cleaned
+
+
+def _thumb_time(bruto: Any, start: float, end: float) -> float:
+    """Instante da capa, sempre dentro do corte e longe das pontas.
+
+    A IA as vezes devolve o tempo relativo ao inicio do trecho em vez da escala do
+    episodio; um valor pequeno demais para ser absoluto e reinterpretado assim.
+    Sem valor utilizavel, cai em 40% do trecho — depois da frase de abertura, que e
+    onde a reacao costuma estar, e nao no meio cego.
+    """
+    padrao = start + (end - start) * 0.4
+    try:
+        t = float(bruto)
+    except (TypeError, ValueError):
+        return round(padrao, 2)
+
+    if t < start and 0 <= t <= (end - start):
+        t = start + t  # veio relativo ao inicio do corte
+    # Nunca nas bordas: a primeira e a ultima fracao pegam a transicao de cena.
+    margem = min(0.5, (end - start) * 0.08)
+    t = max(start + margem, min(end - margem, t))
+    return round(t, 2)
 
 
 def _clip_segments(segments: list[dict[str, Any]], start: float, end: float) -> list[dict[str, Any]]:
@@ -852,14 +922,13 @@ def render_clip(
     mode, focus = _resolve_reframe(video_path, start, duration)
     filter_complex = _reframe_filter(mode, focus, ass_path)
 
-    # Molde opcional: gera um PNG RGBA (faixa do gancho + CTA) e o sobrepoe sobre o
-    # video 9:16 ja com a legenda. Best-effort: sem PNG, o corte sai normal.
+    # Molde opcional: PNG RGBA com a pilula do CTA no rodape, sobreposto ao video
+    # 9:16 ja com a legenda. Best-effort: sem PNG, o corte sai normal.
     overlay_png = None
     if card:
         from app.pipeline import card as card_mod
-        hook = clip.get("hook") or clip.get("thumb_text") or clip.get("title") or ""
         overlay_png = card_mod.render_overlay(
-            hook, settings.clip_cta_text, work_dir / f"card_{output_path.stem}.png"
+            settings.clip_cta_text, work_dir / f"card_{output_path.stem}.png"
         )
 
     inputs = ["-i", str(video_path)]
@@ -945,38 +1014,3 @@ def render_clip_wide(
     return output_path
 
 
-def make_thumbnail(video_path: Path, clip: dict[str, Any], output_path: Path,
-                   vertical: bool = False) -> Path | None:
-    """Extrai um frame do meio do trecho como thumbnail.
-
-    Horizontal (padrao) sai 1280x720, para o YouTube. Vertical sai 1080x1920 com
-    o MESMO enquadramento do corte — e a capa do Reels/TikTok/Short, entao usar o
-    recorte 16:9 ali entregaria uma capa com a cabeca cortada.
-
-    Nunca derruba o pipeline: e um extra, entao qualquer falha vira None e o corte
-    segue sem thumbnail.
-    """
-    start, end = float(clip["start"]), float(clip["end"])
-    duration = end - start
-    meio = start + duration / 2
-
-    cmd = ["ffmpeg", "-y", "-ss", f"{meio:.2f}", "-i", str(video_path), "-frames:v", "1"]
-    if vertical:
-        mode, track = _resolve_reframe(video_path, start, duration)
-        # A capa e um frame so: usa o foco vigente naquele instante da trilha.
-        focus = _focus_at(track, duration / 2)
-        cmd += ["-filter_complex", _vertical_chain(mode, focus), "-map", "[framed]"]
-    else:
-        cmd += ["-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"]
-    cmd += ["-q:v", "3", str(output_path)]
-
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace")
-    except OSError as exc:
-        log.warning("ffmpeg indisponivel para thumbnail (%s)", exc)
-        return None
-    if result.returncode != 0 or not output_path.exists():
-        log.warning("thumbnail do corte falhou: %s", result.stderr.strip()[-300:])
-        return None
-    return output_path

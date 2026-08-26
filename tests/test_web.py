@@ -342,13 +342,20 @@ def main() -> int:
     print("molde do corte (card)")
     from app.pipeline import card as card_mod
     card_png = settings.data_dir / "card_test.png"
-    card_res = card_mod.render_overlay("ELE *MENTIU* NA CARA", "SEGUE O PERFIL", card_png)
+    card_res = card_mod.render_overlay("SEGUE O PERFIL", card_png)
     try:
         from PIL import Image as _Img
         _alpha = _Img.open(card_png).split()[-1]
         _meio = sum(1 for x in range(0, 1080, 40) if _alpha.getpixel((x, 950)) > 0)
+        # A faixa do gancho foi removida em 25/08/2026: o topo tem que ficar limpo,
+        # so o rodape (a pilula do CTA) pode pintar pixel.
+        _topo = sum(1 for x in range(0, 1080, 40) if _alpha.getpixel((x, 60)) > 0)
+        _rodape = sum(1 for x in range(300, 800, 40) if _alpha.getpixel((x, 1830)) > 0)
         check("overlay gera PNG 1080x1920", card_res is not None and card_png.exists())
         check("miolo do molde e transparente (video aparece)", _meio == 0, _meio)
+        check("topo limpo — sem faixa de gancho", _topo == 0, _topo)
+        check("CTA desenhado no rodape", _rodape > 0, _rodape)
+        check("sem CTA nao gera molde", card_mod.render_overlay("", card_png) is None)
     except ImportError:
         check("sem Pillow o molde degrada para None", card_res is None)
     check("home mostra o checkbox de molde", 'name="card"' in client.get("/").text)
@@ -565,6 +572,20 @@ def main() -> int:
     res_sc = distribute.distribute_episode(ep_f, classifier=lambda e, n: "viagens")
     check("segmento sem canal nao agenda",
           res_sc["status"] == "sem_canal_para_segmento" and not db.list_posts(ep_f), res_sc)
+
+    # Regressao: o INSERT de replace_clips ignorava thumb_text/thumb_time, entao a
+    # IA gerava os dois e o banco guardava NULL — toda capa saia sem texto.
+    print("cortes: campos da capa chegam ao banco")
+    ep_t = db.create_episode("https://youtu.be/thumb", "owned")
+    db.replace_clips(ep_t, [{
+        "start": 10.0, "end": 40.0, "title": "t", "hook": "linha crua da legenda",
+        "caption": "c", "thumb_text": "ELE *MENTIU* NA CARA", "thumb_time": 25.5,
+        "score": 9,
+    }])
+    ct = db.list_clips(ep_t)[0]
+    check("thumb_text persiste", ct["thumb_text"] == "ELE *MENTIU* NA CARA",
+          ct["thumb_text"])
+    check("thumb_time persiste", ct["thumb_time"] == 25.5, ct["thumb_time"])
 
     print()
     if failures:

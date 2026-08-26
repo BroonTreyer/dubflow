@@ -534,6 +534,170 @@ def test_same_language_passthrough(tmp: pathlib.Path) -> None:
     check("idioma diferente nao pega o atalho", not translate.same_language("tr", "pt-BR"))
 
 
+def test_thumb_moment() -> None:
+    """A capa tem que sair do momento que importa, nao do frame mais nitido.
+
+    Era essa a queixa: 'cena aleatoria do video'. Nitidez e criterio tecnico e nao
+    sabe qual instante significa alguma coisa — agora a IA aponta o instante e a
+    busca por nitidez acontece SO em volta dele.
+    """
+    print("capa / momento certo")
+    from app.pipeline import clips as cl
+    from app.pipeline import thumbnail as th
+
+    # Janela de busca: curta e centrada no alvo.
+    ini, fim = th.window(100.0, 60.0, 130.0)
+    check("busca fica em volta do instante apontado",
+          ini >= 130.0 - th.SEARCH_RADIUS - 1e-6 and fim <= 130.0 + th.SEARCH_RADIUS + 1e-6,
+          (ini, fim))
+    check("o instante apontado esta dentro da janela", ini <= 130.0 <= fim, (ini, fim))
+    check("janela e bem menor que o corte", (fim - ini) <= 2 * th.SEARCH_RADIUS + 0.01,
+          fim - ini)
+
+    # Sem alvo (cortes antigos), volta a varrer o trecho todo.
+    ini_s, fim_s = th.window(100.0, 60.0, None)
+    check("sem alvo varre o trecho inteiro", (fim_s - ini_s) > 40, fim_s - ini_s)
+
+    # Alvo colado na borda nao pode empurrar a busca para fora do corte.
+    ini_b, fim_b = th.window(100.0, 60.0, 100.0)
+    check("alvo na borda nao sai do corte", ini_b >= 100.0 and fim_b <= 160.0,
+          (ini_b, fim_b))
+    ini_c, fim_c = th.window(100.0, 4.0, 103.9)
+    check("corte curto nao gera janela invertida", ini_c <= fim_c, (ini_c, fim_c))
+
+    # Normalizacao do que a IA devolve.
+    check("instante dentro do corte e mantido",
+          cl._thumb_time(130.0, 100.0, 160.0) == 130.0)
+    check("instante fora do corte e trazido para dentro",
+          100.0 < cl._thumb_time(999.0, 100.0, 160.0) < 160.0,
+          cl._thumb_time(999.0, 100.0, 160.0))
+    # A IA as vezes responde em tempo relativo ao inicio do trecho.
+    check("tempo relativo vira absoluto",
+          cl._thumb_time(30.0, 100.0, 160.0) == 130.0,
+          cl._thumb_time(30.0, 100.0, 160.0))
+    check("sem valor cai em 40% (depois da abertura, nao no meio cego)",
+          cl._thumb_time(None, 100.0, 200.0) == 140.0,
+          cl._thumb_time(None, 100.0, 200.0))
+    check("lixo nao quebra", cl._thumb_time("agora", 100.0, 160.0) == 124.0,
+          cl._thumb_time("agora", 100.0, 160.0))
+    # As pontas pegam transicao de cena.
+    t_borda = cl._thumb_time(100.0, 100.0, 160.0)
+    check("nunca crava exatamente na borda", t_borda > 100.0, t_borda)
+
+    # O texto da capa nunca mais sai da transcricao crua.
+    saneado = cl._sanitize(
+        [{"start": 10, "end": 40, "title": "t", "hook": "linha crua da legenda",
+          "caption": "c", "thumb_text": "ELE *MENTIU*", "thumb_time": 25, "score": 9}],
+        [{"start": 10, "end": 40, "text": "x"}],
+    )
+    check("thumb_time sobrevive ao saneamento",
+          saneado and saneado[0]["thumb_time"] == 25.0, saneado)
+    check("thumb_text sobrevive ao saneamento",
+          saneado and saneado[0]["thumb_text"] == "ELE *MENTIU*", saneado)
+    check("o gerador de capa do frame do meio nao existe mais",
+          not hasattr(cl, "make_thumbnail"))
+
+    # Enquadramento: o video fonte trazia moldura e ate QR de patrocinio de outro
+    # canal, e a capa herdava tudo. O recorte tem que descartar as bordas.
+    prop = 1280 / 720
+    x, y, w, h = th.crop_box(1920, 1080, (921, 237, 310, 451), prop)
+    check("recorte nunca encosta na borda esquerda", x >= 1920 * th.INSET * 0.95, x)
+    check("recorte nao encosta no topo", y >= 1080 * th.INSET * 0.95, y)
+    check("recorte cabe no frame", x + w <= 1920 and y + h <= 1080, (x + w, y + h))
+    check("mantem 16:9", abs((w / h) - prop) < 0.02, w / h)
+    # O rosto (centro em x=1076) precisa continuar dentro, e com folga em cima.
+    check("rosto fica dentro do recorte", x < 1076 < x + w, (x, x + w))
+    check("tem headroom (nao corta o topo da cabeca)", y <= 237, (y, 237))
+    # Rosto grande => recorte menor que o quadro: e o que exclui a tarja do canto.
+    check("aproxima de verdade", w < 1920 * 0.9, w)
+
+    # Sem rosto detectado, ainda assim tira as bordas.
+    xs, ys, ws, hs = th.crop_box(1920, 1080, None, prop)
+    check("sem rosto ainda descarta a moldura", xs > 0 and ys > 0, (xs, ys))
+    check("sem rosto mantem 16:9", abs((ws / hs) - prop) < 0.02, ws / hs)
+
+    # Rosto minusculo nao pode ampliar poucos pixels ate virar borrao.
+    _, _, w_mini, h_mini = th.crop_box(1920, 1080, (900, 500, 40, 60), prop)
+    check("zoom limitado em rosto pequeno", h_mini >= 1080 / th.MAX_ZOOM - 1, h_mini)
+
+    # Campos novos da capa em camadas sobrevivem ao saneamento.
+    comp = cl._sanitize(
+        [{"start": 10, "end": 40, "title": "t", "hook": "h", "caption": "c",
+          "thumb_text": "NAO E SE, E *QUANDO*", "thumb_badge": "ALERTA",
+          "thumb_image_prompt": "San Andreas fault, red glow", "thumb_time": 25,
+          "score": 9}],
+        [{"start": 10, "end": 40, "text": "x"}],
+    )
+    check("selo sobrevive", comp and comp[0]["thumb_badge"] == "ALERTA", comp)
+    check("prompt da imagem sobrevive",
+          comp and comp[0]["thumb_image_prompt"].startswith("San Andreas"), comp)
+    # O texto agora e frase, nao slogan de 5 palavras: o limite tem que caber nela.
+    longo = "VOU ATE ORAR AGORA, O EL NINO CHEGOU NO BRASIL, SABE O QUE VAI ACONTECER"
+    comp2 = cl._sanitize(
+        [{"start": 10, "end": 40, "title": "t", "hook": "h", "caption": "c",
+          "thumb_text": longo, "thumb_time": 25, "score": 9}],
+        [{"start": 10, "end": 40, "text": "x"}],
+    )
+    check("texto longo nao e truncado", comp2 and comp2[0]["thumb_text"] == longo,
+          comp2[0]["thumb_text"] if comp2 else None)
+
+
+def test_thumb_frontality() -> None:
+    """Rosto encarando a camera vale mais que rosto grande olhando para a mesa."""
+    print("capa / rosto de frente")
+    from app.pipeline import thumbnail as th
+
+    # [x,y,w,h, olho_dir(x,y), olho_esq(x,y), nariz(x,y), boca_dir, boca_esq, score]
+    def face(nariz_x, olho_d_y=100.0, olho_e_y=100.0):
+        return [0, 0, 200, 200, 100.0, olho_d_y, 200.0, olho_e_y, nariz_x, 140.0,
+                120.0, 180.0, 180.0, 180.0, 0.9]
+
+    de_frente = th.frontality(face(150.0))            # nariz no meio dos olhos
+    de_lado = th.frontality(face(205.0))              # nariz na linha do olho esquerdo
+    check("de frente pontua alto", de_frente > 0.85, de_frente)
+    check("de perfil pontua baixo", de_lado < 0.45, de_lado)
+    check("de frente vence de lado", de_frente > de_lado)
+
+    tombado = th.frontality(face(150.0, olho_d_y=100.0, olho_e_y=145.0))
+    check("cabeca tombada perde pontos", tombado < de_frente, (tombado, de_frente))
+
+    check("sem landmark nao premia nem pune", th.frontality([0, 0, 10, 10]) == 0.5)
+    check("landmark degenerado nao divide por zero",
+          0 <= th.frontality([0, 0, 10, 10, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+                              5.0, 5.0, 5.0, 5.0, 0.9]) <= 1)
+    check("frontalidade pesa de verdade na nota", th.FRONTAL_WEIGHT >= 2.0,
+          th.FRONTAL_WEIGHT)
+
+
+def test_thumb_imagegen() -> None:
+    """A imagem gerada e um extra: sem ela a capa degrada, nunca falha."""
+    print("capa / imagem tematica")
+    import tempfile
+    from app.config import settings
+    from app.pipeline import imagegen
+
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="dubflow_art_"))
+    check("prompt vazio nao chama a API", imagegen.generate("", tmpdir) is None)
+
+    antes = settings.thumb_generate_image
+    settings.thumb_generate_image = False
+    check("desligado no .env nao chama a API",
+          imagegen.generate("um vulcao", tmpdir) is None)
+    settings.thumb_generate_image = antes
+
+    # Cache por prompt: reprocessar episodio nao pode pagar a imagem de novo.
+    p1 = imagegen._cache_path("vulcao em erupcao", tmpdir)
+    p2 = imagegen._cache_path("vulcao em erupcao", tmpdir)
+    p3 = imagegen._cache_path("mapa da falha", tmpdir)
+    check("mesmo prompt, mesmo arquivo de cache", p1 == p2, (p1.name, p2.name))
+    check("prompt diferente, arquivo diferente", p1 != p3, (p1.name, p3.name))
+
+    check("o estilo proibe texto na imagem gerada",
+          "no text" in imagegen.STYLE.lower())
+    check("o estilo proibe pessoas (o apresentador vem do video)",
+          "no people" in imagegen.STYLE.lower())
+
+
 def test_thumb_colors() -> None:
     """A capa tem que se adaptar ao fundo: cor fixa some assim que a cena muda."""
     print("capa / cores adaptativas")
@@ -759,6 +923,9 @@ def main() -> int:
     test_reframe_track()
     test_focus_expression()
     test_same_language_passthrough(tmp)
+    test_thumb_moment()
+    test_thumb_frontality()
+    test_thumb_imagegen()
     test_thumb_colors()
     test_eta()
     test_burn_progress()

@@ -42,8 +42,23 @@ HIGHLIGHT_PALETTE = (
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 
-CANDIDATE_FRAMES = 9          # quantos frames disputam a capa
+CANDIDATE_FRAMES = 14         # quantos frames disputam a capa
+# Peso da frontalidade na nota. Alto de proposito: rosto olhando para a mesa
+# arruina a capa mesmo nitido e grande.
+FRONTAL_WEIGHT = 3.0
 MIN_CONTRAST = 4.5            # razao WCAG minima entre texto e fundo
+# Raio da busca em torno do instante que a IA apontou. 1,5 s da margem para achar
+# um frame nitido sem sair do momento: mais que isso e voltar a sortear a cena.
+SEARCH_RADIUS = 2.5
+
+# Enquadramento da capa. O video fonte costuma trazer moldura, tarja e ate QR de
+# patrocinio de outro canal nas bordas — INSET descarta essa faixa antes de tudo.
+PANEL_BORDER = (255, 216, 0)   # moldura da capa e do painel do apresentador
+BADGE_BG = (208, 20, 34)       # selo curto ("TENSAO RECORDE")
+
+INSET = 0.055        # fracao de cada borda que nunca entra na capa
+FACE_RATIO = 0.55    # altura do rosto como fracao da altura da capa
+MAX_ZOOM = 2.2       # ampliacao maxima, para nao transformar pixel em borrao
 
 
 def relative_luminance(rgb: tuple[int, int, int]) -> float:
@@ -134,8 +149,62 @@ def parse_highlight(texto: str) -> list[tuple[str, bool]]:
     return palavras
 
 
+def _face_rows(img: Any) -> list[Any]:
+    """Linhas cruas do YuNet: caixa + 5 landmarks (olhos, nariz, cantos da boca).
+
+    `clips._face_boxes` joga os landmarks fora, e sao eles que dizem se a pessoa
+    esta olhando para a camera. Sem detector com landmark, devolve vazio.
+    """
+    from app.pipeline import clips
+
+    yunet = clips._load_yunet()
+    if yunet is None:
+        return []
+    try:
+        h, w = img.shape[:2]
+        yunet.setInputSize((w, h))
+        _, faces = yunet.detect(img)
+        return list(faces) if faces is not None else []
+    except Exception:  # noqa: BLE001 — sem landmark a nota cai no criterio antigo
+        return []
+
+
+def frontality(face: Any) -> float:
+    """0 a 1: quanto a pessoa encara a camera. 1 = de frente, 0 = perfil/cabeca virada.
+
+    Layout do YuNet: [x, y, w, h, olho_dir(x,y), olho_esq(x,y), nariz(x,y),
+    boca_dir(x,y), boca_esq(x,y), score].
+
+    De frente, o nariz fica a meio caminho entre os olhos e a linha dos olhos fica
+    horizontal. De perfil ou com a cabeca baixa, o nariz desloca para um lado e a
+    linha dos olhos inclina. E o que separa a capa em que a pessoa "fala com voce"
+    da capa em que ela olha para a mesa — a diferenca que mais pesa numa thumbnail.
+    """
+    try:
+        olho_d = (float(face[4]), float(face[5]))
+        olho_e = (float(face[6]), float(face[7]))
+        nariz = (float(face[8]), float(face[9]))
+    except (IndexError, TypeError, ValueError):
+        return 0.5  # sem landmark, nao penaliza nem premia
+
+    dist_olhos = ((olho_e[0] - olho_d[0]) ** 2 + (olho_e[1] - olho_d[1]) ** 2) ** 0.5
+    if dist_olhos < 1:
+        return 0.5
+
+    # Nariz centralizado entre os olhos.
+    meio_x = (olho_d[0] + olho_e[0]) / 2
+    desvio = abs(nariz[0] - meio_x) / dist_olhos      # 0 de frente, ~0.5+ de perfil
+    nota_giro = max(0.0, 1.0 - desvio / 0.45)
+
+    # Linha dos olhos horizontal (cabeca reta, nao tombada nem baixa).
+    inclinacao = abs(olho_e[1] - olho_d[1]) / dist_olhos
+    nota_tilt = max(0.0, 1.0 - inclinacao / 0.5)
+
+    return max(0.0, min(1.0, 0.7 * nota_giro + 0.3 * nota_tilt))
+
+
 def _score_frame(img: Any) -> float:
-    """Nota de um candidato a capa: nitidez, rosto grande e exposicao decente.
+    """Nota de um candidato a capa: nitidez, rosto grande, de frente e bem exposto.
 
     Nao detecta olho fechado (5 landmarks nao dizem isso), mas frame borrado —
     que e onde o piscar e o movimento brusco costumam cair — perde no foco.
@@ -150,29 +219,65 @@ def _score_frame(img: Any) -> float:
     nitidez = float(cv2.Laplacian(cinza, cv2.CV_64F).var())
     nota = min(nitidez / 400.0, 2.5)
 
-    # Exposicao: penaliza frame estourado ou quase preto (corte de cena, flash).
+    # Exposicao: o alvo e descartar corte de cena (quadro preto) e flash estourado,
+    # NAO cena escura. Estudio com luz neon roda em brilho medio ~34; um limiar de
+    # 40 penalizava quase todo frame e fazia o unico frame claro vencer mesmo sendo
+    # o pior enquadrado. Rampa suave em vez de degrau, e limites bem nas pontas.
     brilho = float(cinza.mean())
-    if brilho < 40 or brilho > 215:
-        nota -= 1.5
+    if brilho < 18:
+        nota -= 1.5 * (18 - brilho) / 18
+    elif brilho > 235:
+        nota -= 1.5 * (brilho - 235) / 20
 
-    # Rosto grande e um enorme diferencial numa capa.
+    rows = _face_rows(img)
+    if rows:
+        maior = max(rows, key=lambda f: float(f[2]) * float(f[3]))
+        area = float(maior[2]) * float(maior[3])
+        nota += min((area / (w * h)) * 12.0, 2.0)
+        # Peso alto de proposito: rosto grande olhando para a mesa vale menos que
+        # rosto medio encarando a camera.
+        nota += frontality(maior) * FRONTAL_WEIGHT
+        return nota
+
     boxes = clips._face_boxes(img)
     if boxes:
-        maior = max(b[2] * b[3] for b in boxes)
-        nota += min((maior / (w * h)) * 12.0, 2.0)
+        maior_area = max(b[2] * b[3] for b in boxes)
+        nota += min((maior_area / (w * h)) * 12.0, 2.0)
     return nota
 
 
+def window(start: float, duration: float, alvo: float | None) -> tuple[float, float]:
+    """Faixa de tempo onde procurar o frame da capa.
+
+    Com `alvo` (o instante que a IA apontou como clima do trecho), a busca fica
+    numa janela curta em volta dele: o objetivo passa a ser "o melhor frame DAQUELE
+    momento", nao "o frame mais nitido do trecho inteiro". Era essa a origem da
+    capa que parecia sorteada — nitidez e um criterio tecnico e nao sabe qual
+    instante significa alguma coisa.
+
+    Sem alvo, volta ao comportamento antigo: o trecho inteiro, menos as pontas.
+    """
+    if alvo is None:
+        return start + duration * 0.12, start + duration * 0.88
+
+    alvo = max(start, min(start + duration, alvo))
+    raio = min(SEARCH_RADIUS, duration / 2)
+    ini = max(start + duration * 0.04, alvo - raio)
+    fim = min(start + duration * 0.96, alvo + raio)
+    if fim <= ini:  # corte curtissimo: nao ha janela, usa o alvo cru
+        return alvo, alvo
+    return ini, fim
+
+
 def pick_frame(video_path: Path, start: float, duration: float,
-               out_dir: Path) -> tuple[Path | None, float]:
-    """Extrai candidatos ao longo do trecho e devolve o melhor frame."""
+               out_dir: Path, alvo: float | None = None) -> tuple[Path | None, float]:
+    """Extrai candidatos na janela da capa e devolve o melhor frame."""
     try:
         import cv2
     except ImportError:
-        return None, start + duration / 2
+        return None, alvo if alvo is not None else start + duration / 2
 
-    # Evita as pontas: o comeco costuma pegar o corte de cena anterior.
-    ini, fim = start + duration * 0.12, start + duration * 0.88
+    ini, fim = window(start, duration, alvo)
     passo = (fim - ini) / max(1, CANDIDATE_FRAMES - 1)
 
     melhor: tuple[float, Path, float] | None = None
@@ -185,7 +290,7 @@ def pick_frame(video_path: Path, start: float, duration: float,
             if subprocess.run(cmd, capture_output=True).returncode != 0:
                 continue
         except OSError:
-            return None, start + duration / 2
+            return None, alvo if alvo is not None else start + duration / 2
         img = cv2.imread(str(destino))
         if img is None:
             continue
@@ -194,7 +299,7 @@ def pick_frame(video_path: Path, start: float, duration: float,
             melhor = (nota, destino, t)
 
     if melhor is None:
-        return None, start + duration / 2
+        return None, alvo if alvo is not None else start + duration / 2
     return melhor[1], melhor[2]
 
 
@@ -248,6 +353,11 @@ def compose(frame_path: Path, texto: str, output_path: Path,
     vertical = altura > largura
 
     img = Image.open(frame_path).convert("RGB")
+
+    # Enquadra no apresentador e descarta a moldura/tarja do video fonte, para a
+    # capa nao herdar a arte (nem o patrocinio) de outro canal.
+    cx, cy, cw, ch = crop_box(img.width, img.height, _biggest_face(img), largura / altura)
+    img = img.crop((cx, cy, cx + cw, cy + ch))
 
     # Preenche o quadro sem distorcer: escala pelo lado que falta e recorta o centro.
     escala = max(largura / img.width, altura / img.height)
@@ -312,6 +422,221 @@ def compose(frame_path: Path, texto: str, output_path: Path,
 
     img.save(output_path, quality=92)
     return output_path
+
+
+def _fit_cover(img: Any, largura: int, altura: int) -> Any:
+    """Preenche largura x altura sem distorcer (escala e recorta o centro)."""
+    from PIL import Image
+
+    escala = max(largura / img.width, altura / img.height)
+    img = img.resize((max(1, round(img.width * escala)), max(1, round(img.height * escala))),
+                     Image.LANCZOS)
+    e, t = (img.width - largura) // 2, (img.height - altura) // 2
+    return img.crop((e, t, e + largura, t + altura))
+
+
+def compose_composite(frame_path: Path, art_path: Path | None, texto: str,
+                      output_path: Path, badge: str = "",
+                      size: tuple[int, int] = (1280, 720)) -> Path | None:
+    """Capa em camadas: imagem tematica, apresentador em coluna, texto grande.
+
+    Ordem importa. O escurecimento que garante leitura do texto e aplicado SO na
+    coluna do texto e ANTES do painel entrar — quando ele passava por cima de tudo
+    em largura total, cortava o apresentador com uma faixa preta no meio.
+
+    O painel vai colado na borda direita e em altura cheia. Painel flutuando com
+    folga em volta parece descuido; colado parece decisao.
+    """
+    font_file = _font_path()
+    if font_file is None:
+        return None
+    try:
+        from PIL import Image, ImageDraw, ImageEnhance
+    except ImportError:
+        return None
+
+    largura, altura = size
+    borda = max(6, int(altura * 0.014))
+
+    frame = Image.open(frame_path).convert("RGB")
+    rosto = _biggest_face(frame)
+    tem_arte = art_path is not None and art_path.exists()
+
+    if tem_arte:
+        # Coluna do apresentador na direita, altura cheia. O resto e a arte.
+        pw = int(largura * 0.42)
+        ph = altura
+        base = _fit_cover(Image.open(art_path).convert("RGB"), largura, altura)
+        col_texto = largura - pw
+    else:
+        pw, ph = 0, 0
+        base = _fit_cover(frame, largura, altura)
+        col_texto = int(largura * 0.94)
+
+    base = ImageEnhance.Contrast(base).enhance(1.14)
+    base = ImageEnhance.Color(base).enhance(1.28)
+
+    palavras = parse_highlight(texto)
+    draw = ImageDraw.Draw(base)
+
+    margem = int(largura * 0.035)
+    texto_largura = col_texto - margem * 2
+    fonte = linhas = None
+    bloco = 0
+    if palavras:
+        # Texto grande de verdade: e ele que carrega a capa no tamanho de miniatura.
+        fonte, linhas = _fit_lines(draw, palavras, texto_largura,
+                                   int(altura * 0.20), font_file, max_linhas=4)
+        alturas = [draw.textbbox((0, 0), "Ay", font=fonte)[3] for _ in linhas]
+        entrelinha = int(fonte.size * 0.06)   # leading apertado, como capa de canal
+        bloco = sum(alturas) + entrelinha * (len(linhas) - 1)
+
+        # Degrade escuro subindo do rodape, restrito a coluna do texto: sem borda
+        # dura e sem invadir o painel.
+        topo_scrim = max(0, altura - bloco - int(altura * 0.26))
+        h_scrim = altura - topo_scrim
+        mascara = Image.new("L", (col_texto, h_scrim), 0)
+        md = ImageDraw.Draw(mascara)
+        for i in range(h_scrim):
+            md.line([(0, i), (col_texto, i)], fill=int(235 * (i / max(1, h_scrim - 1)) ** 1.35))
+        escuro = Image.new("RGB", (col_texto, h_scrim), BLACK)
+        recorte = base.crop((0, topo_scrim, col_texto, altura))
+        base.paste(Image.composite(escuro, recorte, mascara), (0, topo_scrim))
+
+    if tem_arte:
+        cx, cy, cw, ch = crop_box(frame.width, frame.height, rosto, pw / ph)
+        painel = _fit_cover(frame.crop((cx, cy, cx + cw, cy + ch)), pw, ph)
+        painel = ImageEnhance.Contrast(painel).enhance(1.12)
+        painel = ImageEnhance.Color(painel).enhance(1.15)
+        base.paste(painel, (largura - pw, 0))
+        # Risco vertical separando a coluna da arte: sem ele os dois se misturam.
+        ImageDraw.Draw(base).rectangle(
+            [largura - pw - borda, 0, largura - pw - 1, altura], fill=PANEL_BORDER
+        )
+
+    draw = ImageDraw.Draw(base)
+
+    if palavras:
+        fundo = _region_color(base, altura - bloco - borda, altura - borda)
+        cor_texto, cor_destaque, cor_contorno = pick_colors(fundo)
+
+        y = altura - bloco - int(altura * 0.055)
+        if badge:
+            _draw_badge(base, draw, badge.upper()[:28], font_file, margem,
+                        y - int(altura * 0.025), altura)
+
+        contorno = max(5, int(fonte.size * 0.11))
+        for linha, alt in zip(linhas, alturas):
+            x = margem
+            for palavra, destaque in linha:
+                draw.text((x, y), palavra, font=fonte,
+                          fill=cor_destaque if destaque else cor_texto,
+                          stroke_width=contorno, stroke_fill=cor_contorno)
+                x += draw.textlength(palavra + " ", font=fonte)
+            y += alt + entrelinha
+
+    _draw_border(base, borda)
+    base.save(output_path, quality=93)
+    return output_path
+
+
+def _draw_border(img: Any, borda: int) -> None:
+    """Moldura colorida: e o que descola a capa do fundo branco da timeline."""
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, img.width - 1, img.height - 1], outline=PANEL_BORDER, width=borda)
+
+
+def _draw_badge(img: Any, draw: Any, texto: str, font_file: str, x: int, y: int,
+                altura: int) -> int | None:
+    """Selo curto acima do texto ("TENSAO RECORDE"). Devolve None se nao coube."""
+    from PIL import ImageFont
+
+    try:
+        fonte = ImageFont.truetype(font_file, int(altura * 0.048))
+    except OSError:
+        return None
+    caixa = draw.textbbox((0, 0), texto, font=fonte)
+    lw, lh = caixa[2] - caixa[0], caixa[3] - caixa[1]
+    pad = int(lh * 0.35)
+    topo = y - lh - pad * 2
+    if topo < 0:
+        return None
+    draw.rectangle([x, topo, x + lw + pad * 2, topo + lh + pad * 2], fill=BADGE_BG)
+    draw.text((x + pad, topo + pad - caixa[1]), texto, font=fonte, fill=WHITE)
+    return None
+
+
+def crop_box(largura: int, altura: int, rosto: tuple[int, int, int, int] | None,
+             proporcao: float) -> tuple[int, int, int, int]:
+    """Recorte 16:9 que joga fora a moldura do video fonte e aproxima do rosto.
+
+    O material de origem quase nunca e camera crua: vem com moldura, tarja, marca
+    d'agua e ate QR de patrocinio de OUTRO canal. Usar o quadro inteiro herda tudo
+    isso na sua capa. Entao o recorte comeca descartando INSET de cada borda — que
+    e onde essa tralha mora — e, havendo rosto, centraliza nele.
+
+    Enquadra com headroom: o rosto fica no terco superior, nao no meio, que e como
+    capa de canal grande e composta. O zoom e limitado por MAX_ZOOM para nao
+    ampliar poucos pixels ate virar borrao.
+    """
+    if rosto is None:
+        # Sem rosto: recorte central ja sem as bordas.
+        larg = int(largura * (1 - 2 * INSET))
+        alt = int(larg / proporcao)
+        if alt > altura * (1 - 2 * INSET):
+            alt = int(altura * (1 - 2 * INSET))
+            larg = int(alt * proporcao)
+        x = (largura - larg) // 2
+        y = max(int(altura * INSET), (altura - alt) // 2)
+        return x, y, larg, alt
+
+    fx, fy, fw, fh = rosto
+    # Altura de recorte que deixa o rosto ocupando FACE_RATIO do quadro.
+    alt = int(fh / FACE_RATIO)
+    alt = max(alt, int(altura / MAX_ZOOM))          # nao amplia alem do limite
+    alt = min(alt, int(altura * (1 - 2 * INSET)))   # nunca reencosta nas bordas
+    larg = int(alt * proporcao)
+    if larg > largura * (1 - 2 * INSET):
+        larg = int(largura * (1 - 2 * INSET))
+        alt = int(larg / proporcao)
+
+    centro_x = fx + fw // 2
+    # Headroom: o topo da cabeca fica a ~18% do topo do recorte.
+    y = int(fy - alt * 0.18)
+    x = centro_x - larg // 2
+
+    # Empurra para dentro dos limites uteis (respeitando a borda descartada).
+    lim_x0, lim_y0 = int(largura * INSET), int(altura * INSET)
+    lim_x1, lim_y1 = largura - lim_x0, altura - lim_y0
+    if larg >= lim_x1 - lim_x0:
+        x, larg = lim_x0, lim_x1 - lim_x0
+    else:
+        x = max(lim_x0, min(lim_x1 - larg, x))
+    if alt >= lim_y1 - lim_y0:
+        y, alt = lim_y0, lim_y1 - lim_y0
+    else:
+        y = max(lim_y0, min(lim_y1 - alt, y))
+    return x, y, larg, alt
+
+
+def _biggest_face(img: Any) -> tuple[int, int, int, int] | None:
+    try:
+        import cv2
+        import numpy as np
+        from app.pipeline import clips
+    except ImportError:
+        return None
+    try:
+        matriz = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        boxes = clips._face_boxes(matriz)
+    except Exception:  # noqa: BLE001
+        return None
+    if not boxes:
+        return None
+    x, y, w, h = max(boxes, key=lambda b: b[2] * b[3])
+    return int(x), int(y), int(w), int(h)
 
 
 def _region_color(img: Any, topo: int, base: int) -> tuple[int, int, int]:
@@ -388,17 +713,28 @@ def _veil_strength(fundo: tuple[int, int, int]) -> int:
 
 
 def make(video_path: Path, clip: dict[str, Any], output_path: Path,
-         vertical: bool = False) -> Path | None:
-    """Capa completa de um corte. Nunca derruba o pipeline: falha vira None."""
-    from app.pipeline import clips
+         vertical: bool = False, art_dir: Path | None = None) -> Path | None:
+    """Capa completa de um corte. Nunca derruba o pipeline: falha vira None.
+
+    `art_dir` guarda a imagem gerada por IA fora do diretorio temporario, para o
+    cache sobreviver ao reprocessamento do episodio (a imagem e o item caro).
+    """
+    from app.pipeline import clips, imagegen
 
     start, end = float(clip["start"]), float(clip["end"])
     duration = end - start
     texto = (clip.get("thumb_text") or "").strip()
 
+    # Instante que a IA apontou como clima do trecho. Sem ele (cortes antigos,
+    # anteriores ao campo), a busca volta a varrer o trecho inteiro.
+    try:
+        alvo = float(clip["thumb_time"]) if clip.get("thumb_time") is not None else None
+    except (TypeError, ValueError):
+        alvo = None
+
     with tempfile.TemporaryDirectory(prefix="dubflow_thumb_") as td:
         tmp = Path(td)
-        frame, instante = pick_frame(video_path, start, duration, tmp)
+        frame, instante = pick_frame(video_path, start, duration, tmp, alvo)
 
         if frame is None:  # sem opencv/ffmpeg: cai no frame do meio, sem escolha
             frame = tmp / "meio.jpg"
@@ -427,6 +763,15 @@ def make(video_path: Path, clip: dict[str, Any], output_path: Path,
 
         size = (1080, 1920) if vertical else (1280, 720)
         try:
+            # No 16:9 do YouTube vale a capa em camadas (imagem tematica + painel do
+            # apresentador + bloco de texto). No 9:16 nao: o feed ja mostra o video
+            # em tela cheia e a capa disputa espaco com a interface do app.
+            if not vertical:
+                arte = imagegen.generate(clip.get("thumb_image_prompt") or "",
+                                         art_dir or tmp)
+                return compose_composite(frame, arte, texto, output_path,
+                                         badge=(clip.get("thumb_badge") or "").strip(),
+                                         size=size)
             return compose(frame, texto, output_path, size)
         except Exception as exc:  # noqa: BLE001 — capa e um extra, nunca reprova o corte
             log.warning("composicao da capa falhou (%s)", exc)

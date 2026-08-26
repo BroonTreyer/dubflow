@@ -81,6 +81,41 @@
 </div>
 {% endif %}
 
+{# ------------------------------------------------------- provedores de IA #}
+{% if providers %}
+<div class="panel">
+  <h2>Provedores de IA ({{ providers | selectattr('available') | list | length }}/{{ providers | length }} de pé)</h2>
+  <div style="overflow-x:auto">
+  <table>
+    <tr><th>Provedor</th><th>Cortes</th><th>Tradução</th><th>Situação</th></tr>
+    {% for p in providers %}
+    <tr>
+      <td><strong>{{ p.name }}</strong></td>
+      <td class="muted">{{ p.models.clip }}</td>
+      <td class="muted">{{ p.models.translate }}</td>
+      <td>
+        {% if p.available %}
+          <span style="color:#2e7d32">● de pé</span>
+        {% else %}
+          <span style="color:#c62828">● bloqueado</span>
+          <span class="muted" style="font-size:12px">
+            {% if p.down_for_s > 3600 %}~{{ (p.down_for_s // 3600) }}h{% else %}~{{ (p.down_for_s // 60) + 1 }} min{% endif %}
+            restantes{% if p.reason %} · {{ p.reason[:110] }}{% endif %}
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted" style="font-size:12px;margin:8px 0 0">
+    As janelas de um episódio são repartidas entre os provedores de pé e rodam ao
+    mesmo tempo. Se um cai, o outro assume sozinho — a ordem de preferência vem de
+    <code>LLM_PROVIDERS</code> no <code>.env</code>.
+  </p>
+</div>
+{% endif %}
+
 {# ---------------------------------------------------------------- contas #}
 <div class="panel">
   <h2>Contas ({{ accounts | length }})</h2>

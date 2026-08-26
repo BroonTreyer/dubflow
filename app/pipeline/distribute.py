@@ -23,11 +23,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import anthropic
-
 from app import db
 from app.config import TARGET_LANGUAGES, settings
-from app.pipeline import archive
+from app.pipeline import archive, llm
 
 log = logging.getLogger(__name__)
 
@@ -110,14 +108,11 @@ def _text_sample(episode: dict[str, Any], max_lines: int = 50) -> str:
     return ""
 
 
-def classify_segment(episode: dict[str, Any], niches: list[str],
-                     client: anthropic.Anthropic | None = None) -> str | None:
+def classify_segment(episode: dict[str, Any], niches: list[str]) -> str | None:
     """Escolhe um dos `niches` para o episodio, ou None se nao houver casamento
     confiavel. O retorno e sempre um item de `niches` (casado por slug) ou None."""
-    if not settings.anthropic_api_key or not niches:
+    if not llm.providers() or not niches:
         return None
-    if client is None:
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     system = CLASSIFY_PROMPT.format(niches="\n".join(f"- {n}" for n in niches))
     user = (
@@ -126,17 +121,10 @@ def classify_segment(episode: dict[str, Any], niches: list[str],
         f"Amostra da transcricao:\n{_text_sample(episode)}"
     )
     try:
-        response = client.messages.create(
-            model=settings.clip_scan_model,
-            max_tokens=300,
-            system=[{"type": "text", "text": system}],
-            output_config={"format": {"type": "json_schema", "schema": _CLASSIFY_SCHEMA}},
-            messages=[{"role": "user", "content": user}],
-        )
-        if response.stop_reason == "refusal":
+        r = llm.call_json(llm.ROLE_SCAN, system, user, _CLASSIFY_SCHEMA, max_tokens=300)
+        if r.refusal or not r.text.strip():
             return None
-        text = next((b.text for b in response.content if b.type == "text"), "")
-        data = json.loads(text)
+        data = r.json()
     except Exception as exc:  # noqa: BLE001 — classificacao e best-effort
         log.warning("classificacao de segmento falhou: %s", exc)
         return None

@@ -68,7 +68,8 @@ def _render_variants(
             log.warning("[ep %s] corte %d: versao horizontal falhou: %s", episode_id, idx, exc)
 
     if settings.clip_thumbnail:
-        thumb = thumbnail.make(video_path, clip, clip_dir / f"{nome}.jpg")
+        thumb = thumbnail.make(video_path, clip, clip_dir / f"{nome}.jpg",
+                               art_dir=work_dir / "capas")
         if thumb is not None:
             fields["thumb_path"] = str(thumb)
         # A capa vertical e a que aparece no Reels/TikTok/Short; a 16:9 serve para
