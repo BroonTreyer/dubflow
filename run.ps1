@@ -42,6 +42,17 @@ if ($Only -in @('all', 'web')) {
         Write-Warning "DUBFLOW_PASSWORD vazia no .env - o painel vai recusar todos os logins."
     }
 
-    Write-Host "painel em http://$bindHost`:$bindPort"
+    if ($bindHost -eq '0.0.0.0') {
+        # Exposto na rede: mostra o IP da LAN para abrir de outro aparelho (este PC,
+        # celular). Ver docs/servidor-render.md para firewall e acesso de fora.
+        $lan = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
+            Select-Object -First 1).IPAddress
+        Write-Host "painel EXPOSTO NA REDE (0.0.0.0:$bindPort)"
+        if ($lan) { Write-Host "  deste PC/celular na mesma rede: http://$lan`:$bindPort" }
+        Write-Host "  se nao abrir de outro aparelho, libere a porta $bindPort no firewall (docs/servidor-render.md)"
+    } else {
+        Write-Host "painel em http://$bindHost`:$bindPort (so esta maquina)"
+    }
     & $python -m uvicorn app.web.main:app --host $bindHost --port $bindPort
 }
