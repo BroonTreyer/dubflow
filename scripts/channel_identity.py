@@ -54,7 +54,10 @@ def _identity(token: str) -> tuple[str | None, str]:
         return None, "token e API ok, mas a conta nao tem um canal do YouTube criado"
     sn = items[0]["snippet"]
     titulo = sn.get("title")
-    return titulo, f"'{titulo}' {sn.get('customUrl', '')}".strip()
+    handle = sn.get("customUrl", "")
+    # Inclui o @handle: varios canais podem ter o MESMO titulo (contas novas), e o
+    # handle e o que os distingue no painel.
+    return titulo, handle
 
 
 def main() -> None:
@@ -84,15 +87,18 @@ def main() -> None:
             print(prefix, f"TOKEN INVALIDO/EXPIRADO ({err}) -> reautorize: "
                           f"youtube_auth --channel {ch['id']}")
             continue
-        titulo, detalhe = _identity(token)
+        titulo, extra = _identity(token)
         if not titulo:
-            print(prefix, f"token OK, mas {detalhe}")
+            print(prefix, f"token OK, mas {extra}")
             continue
-        if args.apply and titulo != ch["name"]:
-            db.update_channel(ch["id"], name=titulo)
-            print(prefix, f"renomeado para {detalhe}")
+        # extra = @handle. Nome distinguivel mesmo quando varios canais tem o mesmo titulo.
+        nome_real = f"{titulo} ({extra})" if extra else titulo
+        rotulo = f"'{titulo}' {extra}".strip()
+        if args.apply and nome_real != ch["name"]:
+            db.update_channel(ch["id"], name=nome_real)
+            print(prefix, f"renomeado para {rotulo}")
         else:
-            print(prefix, f"token OK — {detalhe}")
+            print(prefix, f"token OK — {rotulo}")
 
 
 if __name__ == "__main__":
