@@ -91,6 +91,10 @@ class Settings:
     # Sobrepor o apresentador (recortado do video) sobre a arte gerada. Desligado,
     # a capa e so a imagem da IA com o gancho estampado.
     thumb_presenter: bool = _bool("THUMB_PRESENTER", True)
+    # Intensidade da mascara de palavra sensivel na capa:
+    #   1 = so a primeira letra trocavel (M0RTE)
+    #   2 = todas as trocaveis (M0RT3) — descaracteriza mais para o filtro
+    thumb_mask_level: int = _int("THUMB_MASK_LEVEL", 2)
 
     # --- credito da fonte ---
     # Link do episodio original e @ do canal no fim de toda descricao/legenda.

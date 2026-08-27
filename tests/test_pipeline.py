@@ -705,15 +705,17 @@ def test_thumb_masking() -> None:
     print("capa / mascara de palavra sensivel")
     from app.pipeline import thumbnail as th
 
-    check("morte vira M0RTE", th.mask_sensitive("ELE CONFESSOU A MORTE") ==
-          "ELE CONFESSOU A M0RTE", th.mask_sensitive("ELE CONFESSOU A MORTE"))
+    saida_morte = th.mask_sensitive("ELE CONFESSOU A MORTE")
+    check("morte e mascarada", "MORTE" not in saida_morte, saida_morte)
+    check("o resto da frase fica intacto",
+          saida_morte.startswith("ELE CONFESSOU A "), saida_morte)
     check("cadeia e mascarada", "CADEIA" not in th.mask_sensitive("10 ANOS DE CADEIA"))
     check("porno e mascarada", "PORNO" not in th.mask_sensitive("A ATRIZ PORNO FALOU"))
 
     # O destaque (*palavra*) e sintaxe nossa e nao pode se perder na mascara.
     saida = th.mask_sensitive("A ATRIZ *PORNO* CONTOU")
     check("mascara preserva os asteriscos de destaque",
-          saida.count("*") == 2 and "P0RNO" in saida, saida)
+          saida.count("*") == 2 and "PORNO" not in saida, saida)
     palavras = th.parse_highlight(saida)
     check("a palavra mascarada continua sendo a destacada",
           any(d and "0" in p for p, d in palavras), palavras)
@@ -722,7 +724,8 @@ def test_thumb_masking() -> None:
     # sem acento, e a comparacao normaliza os dois lados.
     com_acento = th.mask_sensitive("ELE USOU COCAÍNA")
     check("acento nao escapa da lista", com_acento != "ELE USOU COCAÍNA", com_acento)
-    check("e a mascara preserva o acento restante", "ÍNA" in com_acento, com_acento)
+    check("a palavra acentuada e mascarada, nao descartada",
+          "COCA" not in com_acento and com_acento != "ELE USOU COCAÍNA", com_acento)
 
     # Texto comum fica intacto — mascarar tudo destruiria o gancho.
     normal = "QUANDO PARA DE TREMER, PREOCUPA"
@@ -730,9 +733,21 @@ def test_thumb_masking() -> None:
           th.mask_sensitive(normal) == normal, th.mask_sensitive(normal))
     check("vazio nao quebra", th.mask_sensitive("") == "")
 
-    # So UMA letra por palavra: legibilidade no tamanho de miniatura.
-    trocas = sum(1 for a, b in zip("MORTE", th.mask_word("MORTE")) if a != b)
-    check("mascara troca so uma letra", trocas == 1, trocas)
+    # Nivel 2 (padrao) troca mais de uma letra — mascara "clean" demais nao
+    # descaracteriza a palavra para o filtro.
+    trocas = sum(1 for a, b in zip("MORTE", th.mask_word("MORTE", 2)) if a != b)
+    check("nivel 2 troca mais de uma letra", trocas >= 2, trocas)
+    check("nivel 1 troca so uma",
+          sum(1 for a, b in zip("MORTE", th.mask_word("MORTE", 1)) if a != b) == 1)
+
+    # Teto de trocas: sem ele, ASSASSINATO virava ilegivel no tamanho de capa.
+    mascarada = th.mask_word("ASSASSINATO", 2)
+    trocas_longa = sum(1 for a, b in zip("ASSASSINATO", mascarada) if a != b)
+    check("teto de trocas protege a leitura",
+          trocas_longa <= th.MAX_TROCAS_POR_PALAVRA, (mascarada, trocas_longa))
+
+    # "u" ficou fora do mapa: nao ha substituto que pareca mascara, so typo.
+    check("u nao e mascarado", th.mask_word("TUDO", 2) == "TUD0", th.mask_word("TUDO", 2))
 
 
 def test_thumb_moment() -> None:

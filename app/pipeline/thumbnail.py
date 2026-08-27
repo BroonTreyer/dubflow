@@ -157,19 +157,43 @@ PALAVRAS_SENSIVEIS = (
     "arma", "armas", "bandido", "presidio", "presídio", "cadeia", "preso",
 )
 
-# Trocas que preservam a leitura no tamanho de miniatura. So UMA letra por palavra
-# e trocada: "M0RTE" continua legivel de relance, "M0RT3" ja custa meio segundo do
-# leitor — e meio segundo e o tempo que a capa tem.
-_MASCARA = {"o": "0", "a": "@", "e": "3", "i": "1", "u": "ü", "s": "$"}
+# Trocas que descaracterizam a palavra para o filtro sem matar a leitura humana.
+# "u" ficou de fora de proposito: nao ha substituto que pareca mascara em vez de
+# erro de digitacao ("ü" parece typo, e typo na capa cheira a canal amador).
+_MASCARA = {"o": "0", "a": "@", "e": "3", "i": "1", "s": "$"}
+
+# Teto de trocas por palavra. Sem ele, "ASSASSINATO" virava "@$$@$$1N@T0" —
+# irreconhecivel no tamanho de miniatura, que e onde a capa e lida. Com teto, as
+# primeiras letras carregam a mascara e o resto ancora o reconhecimento.
+MAX_TROCAS_POR_PALAVRA = 3
 
 
-def mask_word(palavra: str) -> str:
-    """Mascara UMA vogal da palavra, preservando caixa e pontuacao ao redor."""
-    for i, ch in enumerate(palavra):
+def mask_word(palavra: str, nivel: int | None = None) -> str:
+    """Mascara a palavra. `nivel` controla quantas letras sao trocadas.
+
+    1 = so a primeira trocavel ("M0RTE") — discreto, mas o filtro automatico
+        reconhece a palavra quase igual.
+    2 = todas as trocaveis ("M0RT3", "C@D31@") — e o que descaracteriza de
+        verdade para o classificador, mantendo a leitura humana.
+
+    A primeira LETRA nunca e trocada quando a palavra comeca por consoante
+    trocavel (ex.: "S" de SEXO vira "$" so no nivel 2), porque a inicial e o que
+    ancora o reconhecimento da palavra pelo leitor.
+    """
+    if nivel is None:
+        nivel = settings.thumb_mask_level
+
+    teto = MAX_TROCAS_POR_PALAVRA if nivel >= 2 else 1
+    saida = []
+    trocadas = 0
+    for ch in palavra:
         sub = _MASCARA.get(ch.lower())
-        if sub:
-            return palavra[:i] + sub + palavra[i + 1:]
-    return palavra
+        if sub and trocadas < teto:
+            saida.append(sub)
+            trocadas += 1
+        else:
+            saida.append(ch)
+    return "".join(saida)
 
 
 def _limpa(palavra: str) -> str:
