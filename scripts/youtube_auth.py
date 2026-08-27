@@ -42,7 +42,10 @@ import requests
 from app import credentials, db
 from app.config import settings
 
-SCOPE = "https://www.googleapis.com/auth/youtube.upload"
+# upload = publicar; readonly = ler a identidade do canal (nome/@handle) para o
+# painel saber qual conta e qual. Espaco separa multiplos escopos.
+SCOPE = ("https://www.googleapis.com/auth/youtube.upload"
+         " https://www.googleapis.com/auth/youtube.readonly")
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 

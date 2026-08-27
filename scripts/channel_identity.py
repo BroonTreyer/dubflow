@@ -11,6 +11,8 @@ e-mail — nesse caso o script mostra so a saude do token.
 
 from __future__ import annotations
 
+import argparse
+
 import requests
 
 from app import credentials, db
@@ -29,21 +31,29 @@ def _access_token(cid: str, secret: str, refresh: str) -> tuple[str | None, str 
     return r.get("access_token"), (r.get("error_description") or r.get("error"))
 
 
-def _identity(token: str) -> str | None:
-    """Titulo/@handle do canal, se o escopo permitir ler. None quando nao permite."""
+def _identity(token: str) -> tuple[str | None, str]:
+    """(titulo, rotulo) do canal se o escopo permitir ler. titulo=None quando nao."""
     try:
         data = requests.get(CHANNELS_URL, params={"part": "snippet", "mine": "true"},
                             headers={"Authorization": f"Bearer {token}"}, timeout=30).json()
     except requests.RequestException:
-        return None
+        return None, ""
     items = data.get("items") or []
     if not items:
-        return None
+        return None, ""
     sn = items[0]["snippet"]
-    return f"'{sn.get('title')}' {sn.get('customUrl', '')}".strip()
+    titulo = sn.get("title")
+    return titulo, f"'{titulo}' {sn.get('customUrl', '')}".strip()
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Saude do token e identidade dos canais do YouTube.")
+    parser.add_argument("--apply", action="store_true",
+                        help="renomeia cada canal no painel com o nome real do YouTube "
+                             "(exige token com escopo youtube.readonly).")
+    args = parser.parse_args()
+
     db.init_db()
     canais = [c for c in db.list_channels() if c["platform"] == "youtube"]
     if not canais:
@@ -63,8 +73,16 @@ def main() -> None:
             print(prefix, f"TOKEN INVALIDO/EXPIRADO ({err}) -> reautorize: "
                           f"youtube_auth --channel {ch['id']}")
             continue
-        nome = _identity(token)
-        print(prefix, f"token OK" + (f" — {nome}" if nome else " (identidade indisponivel: escopo so de upload)"))
+        titulo, rotulo = _identity(token)
+        if not titulo:
+            print(prefix, "token OK (identidade indisponivel: falta o escopo "
+                          "youtube.readonly — reautorize com o youtube_auth novo)")
+            continue
+        if args.apply and titulo != ch["name"]:
+            db.update_channel(ch["id"], name=titulo)
+            print(prefix, f"renomeado para {rotulo}")
+        else:
+            print(prefix, f"token OK — {rotulo}")
 
 
 if __name__ == "__main__":
