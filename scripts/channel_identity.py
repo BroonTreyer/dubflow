@@ -32,15 +32,26 @@ def _access_token(cid: str, secret: str, refresh: str) -> tuple[str | None, str 
 
 
 def _identity(token: str) -> tuple[str | None, str]:
-    """(titulo, rotulo) do canal se o escopo permitir ler. titulo=None quando nao."""
+    """(titulo, detalhe). titulo=None quando nao deu; detalhe explica o porque:
+    rotulo do canal no sucesso, ou o motivo real (API desativada, sem escopo, sem
+    canal) — nao mais um chute de 'falta escopo'."""
     try:
         data = requests.get(CHANNELS_URL, params={"part": "snippet", "mine": "true"},
                             headers={"Authorization": f"Bearer {token}"}, timeout=30).json()
-    except requests.RequestException:
-        return None, ""
+    except requests.RequestException as exc:
+        return None, f"erro de rede: {exc}"
+    err = data.get("error")
+    if err:
+        msg = str(err.get("message", err))
+        reason = (err.get("errors") or [{}])[0].get("reason", "")
+        if "has not been used in project" in msg or reason in ("accessNotConfigured", "SERVICE_DISABLED"):
+            return None, "YouTube Data API v3 DESATIVADA no projeto Cloud deste canal — ative-a (isso tambem impede o UPLOAD)"
+        if reason in ("insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"):
+            return None, "falta o escopo youtube.readonly — reautorize com o youtube_auth novo"
+        return None, msg
     items = data.get("items") or []
     if not items:
-        return None, ""
+        return None, "token e API ok, mas a conta nao tem um canal do YouTube criado"
     sn = items[0]["snippet"]
     titulo = sn.get("title")
     return titulo, f"'{titulo}' {sn.get('customUrl', '')}".strip()
@@ -73,16 +84,15 @@ def main() -> None:
             print(prefix, f"TOKEN INVALIDO/EXPIRADO ({err}) -> reautorize: "
                           f"youtube_auth --channel {ch['id']}")
             continue
-        titulo, rotulo = _identity(token)
+        titulo, detalhe = _identity(token)
         if not titulo:
-            print(prefix, "token OK (identidade indisponivel: falta o escopo "
-                          "youtube.readonly — reautorize com o youtube_auth novo)")
+            print(prefix, f"token OK, mas {detalhe}")
             continue
         if args.apply and titulo != ch["name"]:
             db.update_channel(ch["id"], name=titulo)
-            print(prefix, f"renomeado para {rotulo}")
+            print(prefix, f"renomeado para {detalhe}")
         else:
-            print(prefix, f"token OK — {rotulo}")
+            print(prefix, f"token OK — {detalhe}")
 
 
 if __name__ == "__main__":
