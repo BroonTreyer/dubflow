@@ -207,6 +207,66 @@ def run_delivery_queue() -> bool:
     return True
 
 
+_last_cleanup: float | None = None
+
+
+def run_cleanup_published() -> bool:
+    """Apaga o ARQUIVO do corte que ja foi publicado em todos os seus destinos.
+
+    Numa fabrica de 1 ano de fila, corte publicado e peso morto: ele ja esta no
+    YouTube. So o arquivo sai — a linha no banco fica, entao historico, permalink
+    e metricas continuam no painel.
+
+    O que NAO e tocado:
+
+    - o ACERVO (`data/archive`), que e o produto vendido no Telegram;
+    - a capa, que e pequena e ainda aparece no painel;
+    - corte com qualquer publicacao pendente (pode ir para mais de um canal).
+
+    A carencia (CLEANUP_AFTER_HOURS) da tempo de republicar se o upload der
+    problema depois de marcado como publicado.
+    """
+    global _last_cleanup
+    if not settings.cleanup_published:
+        return False
+
+    agora = time.monotonic()
+    if _last_cleanup is not None and agora - _last_cleanup < 3600:
+        return False
+    _last_cleanup = agora
+
+    candidatos = db.clips_fully_published(settings.cleanup_after_hours)
+    if not candidatos:
+        return False
+
+    liberado = 0
+    apagados = 0
+    for clip in candidatos:
+        # path (9:16) e path_wide (16:9) sao os pesados; a capa fica.
+        for campo in ("path", "path_wide"):
+            alvo = clip.get(campo)
+            if not alvo:
+                continue
+            caminho = Path(alvo)
+            try:
+                if not caminho.is_file():
+                    continue
+                # Nunca apagar fora de data/: um path adulterado nao vira estrago.
+                if not caminho.resolve().is_relative_to(settings.data_dir.resolve()):
+                    log.warning("cleanup: %s esta fora de data/, ignorado", caminho)
+                    continue
+                liberado += caminho.stat().st_size
+                caminho.unlink()
+                apagados += 1
+            except OSError as exc:
+                log.warning("cleanup: nao consegui apagar %s (%s)", caminho, exc)
+
+    if apagados:
+        log.info("cleanup: %d arquivo(s) de corte publicado removidos, %.1f GB liberados",
+                 apagados, liberado / 1e9)
+    return bool(apagados)
+
+
 _last_autofill: float | None = None
 
 
@@ -429,8 +489,9 @@ def main() -> None:
             # Por ultimo: so abastece quando o resto ja foi atendido, para nao
             # empilhar download novo sobre uma fila que ainda esta andando.
             abastecido = run_autofill()
+            limpou = run_cleanup_published()
             did_work = (published or delivered or stats or acted or processed
-                        or paid or expired or vip_ep or abastecido)
+                        or paid or expired or vip_ep or abastecido or limpou)
         except KeyboardInterrupt:
             log.info("encerrando")
             return

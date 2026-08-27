@@ -110,6 +110,15 @@ class Settings:
     # Piso de disco livre (GB). Abaixo disso o abastecimento para, para o worker
     # nao morrer no meio de um render por falta de espaco.
     queue_min_free_gb: int = _int("QUEUE_MIN_FREE_GB", 25)
+
+    # --- limpeza pos-publicacao ---
+    # Corte que ja subiu em TODOS os seus destinos vira peso morto no disco. Apaga
+    # so o arquivo: a linha no banco fica, com permalink e metricas. O ACERVO nao
+    # e tocado — ele e o produto vendido no Telegram.
+    cleanup_published: bool = _bool("CLEANUP_PUBLISHED", False)
+    # Carencia depois da ultima publicacao, para dar tempo de republicar se algo
+    # der errado no upload.
+    cleanup_after_hours: int = _int("CLEANUP_AFTER_HOURS", 48)
     attribution_header: str = os.getenv("ATTRIBUTION_HEADER", "-- Credito --")
     attribution_footer: str = os.getenv(
         "ATTRIBUTION_FOOTER",

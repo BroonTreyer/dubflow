@@ -774,6 +774,52 @@ def main() -> int:
     check("arquivo novo muda a url (cache do navegador nao acerta)",
           media_url(nome) != u1, (u1, media_url(nome)))
 
+    print("limpeza pos-publicacao")
+    ep_cl = db.create_episode("https://youtu.be/limpeza", "owned")
+    ids_cl = db.replace_clips(ep_cl, [
+        {"start": 0, "end": 30, "title": "publicado", "caption": "c", "score": 9},
+        {"start": 40, "end": 70, "title": "pendente", "caption": "c", "score": 9},
+        {"start": 80, "end": 110, "title": "dois destinos", "caption": "c", "score": 9},
+    ])
+    pasta_cl = settings.data_dir / "episodes" / f"ep_{ep_cl:05d}" / "clips"
+    pasta_cl.mkdir(parents=True, exist_ok=True)
+    for i, cid in enumerate(ids_cl):
+        arq = pasta_cl / f"c{i}.mp4"
+        arq.write_bytes(b"video")
+        db.update_clip(cid, path=str(arq), status="ready")
+
+    # corte 0: um post, publicado -> deve entrar na limpeza
+    p0 = db.create_post(ids_cl[0], "youtube")
+    db.update_post(p0, status="published", posted_at=db.now())
+    # corte 1: post ainda pendente -> NAO pode entrar
+    db.create_post(ids_cl[1], "youtube")
+    # corte 2: dois destinos, so um publicado -> NAO pode entrar
+    p2a = db.create_post(ids_cl[2], "youtube")
+    db.update_post(p2a, status="published", posted_at=db.now())
+    db.create_post(ids_cl[2], "tiktok")
+
+    limpaveis = {c["id"] for c in db.clips_fully_published(older_than_hours=0)}
+    check("corte 100% publicado entra na limpeza", ids_cl[0] in limpaveis, limpaveis)
+    check("corte com post pendente fica de fora", ids_cl[1] not in limpaveis, limpaveis)
+    check("corte com 2 destinos e 1 pendente fica de fora",
+          ids_cl[2] not in limpaveis, limpaveis)
+
+    # A carencia protege republicacao: recem-publicado nao e apagado.
+    check("carencia segura o recem-publicado",
+          ids_cl[0] not in {c["id"] for c in db.clips_fully_published(older_than_hours=48)})
+
+    import worker as _w
+    _w.settings.cleanup_published = True
+    _w.settings.cleanup_after_hours = 0
+    _w._last_cleanup = None
+    _w.run_cleanup_published()
+    check("arquivo do publicado foi apagado", not (pasta_cl / "c0.mp4").exists())
+    check("arquivo do pendente continua", (pasta_cl / "c1.mp4").exists())
+    check("arquivo do parcialmente publicado continua", (pasta_cl / "c2.mp4").exists())
+    check("a linha do corte permanece no banco (historico/metricas)",
+          db.list_clips(ep_cl)[0]["id"] == ids_cl[0])
+    _w.settings.cleanup_published = False
+
     print("apagar episodio")
     ep_del = db.create_episode("https://youtu.be/apagar", "owned")
     ids = db.replace_clips(ep_del, [{"start": 0, "end": 30, "title": "x", "caption": "c",

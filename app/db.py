@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from app.config import settings
@@ -754,6 +754,36 @@ def channel_totals() -> dict[int | None, dict[str, int]]:
 
 
 # ------------------------------------------------------------------- distribuicao automatica
+
+
+def clips_fully_published(older_than_hours: int = 0) -> list[dict[str, Any]]:
+    """Cortes cujos posts JA FORAM TODOS publicados — candidatos a limpeza.
+
+    Duas exigencias, e as duas importam:
+
+    - TODO post do corte precisa estar 'published'. Um corte pode ir para mais de
+      um canal; apagar o arquivo com uma publicacao ainda pendente deixaria o
+      worker sem o video na hora de subir.
+    - Precisa ter ao menos um post. Corte sem publicacao nenhuma nao e "ja
+      publicado", e produto que ainda nao saiu.
+
+    `older_than_hours` da uma carencia depois da ultima publicacao: se algo der
+    errado no upload, o arquivo ainda esta no disco para republicar.
+    """
+    corte = (datetime.now(timezone.utc) - timedelta(hours=older_than_hours)).isoformat()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT c.*, MAX(p.posted_at) AS ultima_publicacao,"
+            "       COUNT(p.id) AS n_posts"
+            " FROM clips c JOIN posts p ON p.clip_id = c.id"
+            " WHERE c.path IS NOT NULL AND c.path != ''"
+            " GROUP BY c.id"
+            " HAVING COUNT(p.id) > 0"
+            "    AND SUM(CASE WHEN p.status = 'published' THEN 1 ELSE 0 END) = COUNT(p.id)"
+            "    AND MAX(p.posted_at) <= ?",
+            (corte,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def clips_ready_without_posts(episode_id: int) -> list[dict[str, Any]]:
