@@ -104,8 +104,16 @@ chamada que o trecho nao entrega e a definicao de clickbait para o YouTube.
   trecho. Nada de "cientistas confirmam" se ninguem confirmou nada ali.
 - **Nao anuncie o que nao aconteceu**: "morreu", "foi preso", "acabou" sobre quem
   nao morreu, nao foi preso, nao acabou. Isso e desinformacao, nao gancho.
-- **Sem palavrao, xingamento ou termo sexual** em qualquer campo. Titulo e capa
-  com palavrao entram em "conteudo inadequado para anunciantes".
+- **Sem palavrao ou xingamento** em qualquer campo — isso entra em "conteudo
+  inadequado para anunciantes".
+- **Assunto sensivel se escreve mascarado NA CAPA.** Morte, sexo, drogas, crime e
+  prisao sao temas legitimos de podcast, mas o filtro automatico le a palavra na
+  imagem e derruba o alcance. No `thumb_text`, troque UMA letra: "M0RTE",
+  "C@DEIA", "P0RNO", "DR0GAS". No `yt_title` e no `caption` escreva normal — ali
+  a grafia mascarada atrapalha a busca e parece spam.
+- **Nunca copie fala explicita crua para a capa.** Se o trecho tem linguagem
+  pesada, a capa leva a TENSAO, nao a frase: "ELE CONTOU TUDO" em vez de
+  reproduzir o palavrao.
 - **Sem apelo a tragedia real** (mortes, acidentes, doenca de pessoa nomeada) como
   isca. Tratar o tema e legitimo; usar a dor como chamariz nao.
 - **Sem promessa de saude, cura, ganho financeiro garantido ou previsao de

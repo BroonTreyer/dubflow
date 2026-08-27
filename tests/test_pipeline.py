@@ -700,6 +700,41 @@ def test_attribution() -> None:
     settings.attribution_enabled = antes
 
 
+def test_thumb_masking() -> None:
+    """Palavra sensivel vira mascarada NA CAPA — o filtro le a imagem."""
+    print("capa / mascara de palavra sensivel")
+    from app.pipeline import thumbnail as th
+
+    check("morte vira M0RTE", th.mask_sensitive("ELE CONFESSOU A MORTE") ==
+          "ELE CONFESSOU A M0RTE", th.mask_sensitive("ELE CONFESSOU A MORTE"))
+    check("cadeia e mascarada", "CADEIA" not in th.mask_sensitive("10 ANOS DE CADEIA"))
+    check("porno e mascarada", "PORNO" not in th.mask_sensitive("A ATRIZ PORNO FALOU"))
+
+    # O destaque (*palavra*) e sintaxe nossa e nao pode se perder na mascara.
+    saida = th.mask_sensitive("A ATRIZ *PORNO* CONTOU")
+    check("mascara preserva os asteriscos de destaque",
+          saida.count("*") == 2 and "P0RNO" in saida, saida)
+    palavras = th.parse_highlight(saida)
+    check("a palavra mascarada continua sendo a destacada",
+          any(d and "0" in p for p, d in palavras), palavras)
+
+    # Acento nao pode fazer a palavra escapar da lista: "COCAÍNA" esta na lista
+    # sem acento, e a comparacao normaliza os dois lados.
+    com_acento = th.mask_sensitive("ELE USOU COCAÍNA")
+    check("acento nao escapa da lista", com_acento != "ELE USOU COCAÍNA", com_acento)
+    check("e a mascara preserva o acento restante", "ÍNA" in com_acento, com_acento)
+
+    # Texto comum fica intacto — mascarar tudo destruiria o gancho.
+    normal = "QUANDO PARA DE TREMER, PREOCUPA"
+    check("texto sem palavra sensivel nao e tocado",
+          th.mask_sensitive(normal) == normal, th.mask_sensitive(normal))
+    check("vazio nao quebra", th.mask_sensitive("") == "")
+
+    # So UMA letra por palavra: legibilidade no tamanho de miniatura.
+    trocas = sum(1 for a, b in zip("MORTE", th.mask_word("MORTE")) if a != b)
+    check("mascara troca so uma letra", trocas == 1, trocas)
+
+
 def test_thumb_moment() -> None:
     """A capa tem que sair do momento que importa, nao do frame mais nitido.
 
@@ -1139,6 +1174,7 @@ def main() -> int:
     test_clip_openings()
     test_clip_ranking()
     test_attribution()
+    test_thumb_masking()
     test_thumb_moment()
     test_thumb_frontality()
     test_thumb_layout()

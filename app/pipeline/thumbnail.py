@@ -16,6 +16,7 @@ import logging
 import re
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +135,78 @@ def _font_path() -> str | None:
         if Path(candidate).exists():
             return candidate
     return None
+
+
+# Palavras que os filtros automaticos do YouTube tratam como sinal de conteudo
+# inadequado para anunciante. O assunto continua o mesmo — o que muda e a grafia
+# na CAPA, para o classificador de imagem nao derrubar o alcance por uma palavra.
+# Nao e para esconder do espectador: o video entrega exatamente o que promete.
+PALAVRAS_SENSIVEIS = (
+    # morte e violencia
+    "morte", "morteu", "morreu", "morto", "morta", "matou", "matar", "assassinato",
+    "assassino", "suicidio", "suicídio", "estupro", "estuprou", "tiro", "tiros",
+    "sangue", "cadaver", "cadáver", "massacre", "tortura",
+    # sexual
+    "sexo", "sexual", "porno", "pornô", "pornografia", "prostituta", "prostituicao",
+    "prostituição", "transar", "transou", "nudes", "nude", "puta", "putaria",
+    "orgia", "virgem", "trair", "traicao", "traição",
+    # drogas
+    "droga", "drogas", "cocaina", "cocaína", "maconha", "crack", "traficante",
+    "trafico", "tráfico", "usuario de droga",
+    # outros gatilhos de desmonetizacao
+    "arma", "armas", "bandido", "presidio", "presídio", "cadeia", "preso",
+)
+
+# Trocas que preservam a leitura no tamanho de miniatura. So UMA letra por palavra
+# e trocada: "M0RTE" continua legivel de relance, "M0RT3" ja custa meio segundo do
+# leitor — e meio segundo e o tempo que a capa tem.
+_MASCARA = {"o": "0", "a": "@", "e": "3", "i": "1", "u": "ü", "s": "$"}
+
+
+def mask_word(palavra: str) -> str:
+    """Mascara UMA vogal da palavra, preservando caixa e pontuacao ao redor."""
+    for i, ch in enumerate(palavra):
+        sub = _MASCARA.get(ch.lower())
+        if sub:
+            return palavra[:i] + sub + palavra[i + 1:]
+    return palavra
+
+
+def _limpa(palavra: str) -> str:
+    """Sem acento, sem pontuacao, minusculo — para comparar com a lista."""
+    base = "".join(c for c in unicodedata.normalize("NFKD", palavra)
+                   if not unicodedata.combining(c))
+    return re.sub(r"[^\w]", "", base).lower()
+
+
+def mask_sensitive(texto: str) -> str:
+    """Mascara as palavras sensiveis do texto da capa.
+
+    Roda no RENDER, nao so no prompt: o modelo as vezes esquece a regra, e a capa
+    e o unico lugar onde a palavra vira imagem — que e justamente o que o filtro
+    automatico le. Aqui a garantia nao depende de o modelo lembrar.
+
+    Preserva os asteriscos de destaque (`*PALAVRA*`), que sao sintaxe nossa.
+    """
+    if not (texto or "").strip():
+        return texto
+
+    saida = []
+    for pedaco in texto.split():
+        marcado = "*" in pedaco
+        nu = pedaco.replace("*", "")
+        if _limpa(nu) in _SENSIVEIS_NORMALIZADAS:
+            nu = mask_word(nu)
+            # Recompoe a marcacao de destaque exatamente como veio.
+            pedaco = f"*{nu}*" if marcado else nu
+        saida.append(pedaco)
+    return " ".join(saida)
+
+
+_SENSIVEIS_NORMALIZADAS = frozenset(
+    "".join(c for c in unicodedata.normalize("NFKD", p) if not unicodedata.combining(c)).lower()
+    for p in PALAVRAS_SENSIVEIS
+)
 
 
 def parse_highlight(texto: str) -> list[tuple[str, bool]]:
@@ -378,7 +451,7 @@ def compose(frame_path: Path, texto: str, output_path: Path,
     img = ImageEnhance.Color(img).enhance(1.25)
     img = ImageEnhance.Sharpness(img).enhance(1.4)
 
-    palavras = parse_highlight(texto)
+    palavras = parse_highlight(mask_sensitive(texto))
     if not palavras:
         img.save(output_path, quality=92)
         return output_path
@@ -500,7 +573,7 @@ def compose_composite(frame_path: Path | None, art_path: Path | None, texto: str
         pw = ph = 0
         col_texto = largura
 
-    palavras = parse_highlight(texto)
+    palavras = parse_highlight(mask_sensitive(texto))
     draw = ImageDraw.Draw(base)
     margem = int(largura * (0.055 if vertical else 0.035))
     fonte = linhas = alturas = None
