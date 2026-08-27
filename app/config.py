@@ -96,6 +96,20 @@ class Settings:
     # Link do episodio original e @ do canal no fim de toda descricao/legenda.
     # Um corte sem credito e indistinguivel de reupload para quem denuncia.
     attribution_enabled: bool = _bool("ATTRIBUTION_ENABLED", True)
+
+    # --- abastecimento automatico da fila ---
+    # O alvo nao e "X videos por dia": e manter N dias de publicacao agendada em
+    # cada canal. Enquanto o horizonte estiver abaixo, o sistema puxa das fontes
+    # autorizadas; ao alcancar, para sozinho.
+    queue_autofill: bool = _bool("QUEUE_AUTOFILL", False)
+    queue_target_days: int = _int("QUEUE_TARGET_DAYS", 365)
+    # Teto por rodada. Protege disco e GPU: cada episodio custa ~0,35 GB de fonte
+    # e ~15 min de transcricao. Sem teto, um alvo de 1 ano enche o disco.
+    queue_max_per_run: int = _int("QUEUE_MAX_PER_RUN", 3)
+    queue_scan_interval_hours: int = _int("QUEUE_SCAN_INTERVAL_HOURS", 6)
+    # Piso de disco livre (GB). Abaixo disso o abastecimento para, para o worker
+    # nao morrer no meio de um render por falta de espaco.
+    queue_min_free_gb: int = _int("QUEUE_MIN_FREE_GB", 25)
     attribution_header: str = os.getenv("ATTRIBUTION_HEADER", "-- Credito --")
     attribution_footer: str = os.getenv(
         "ATTRIBUTION_FOOTER",

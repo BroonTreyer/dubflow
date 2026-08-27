@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -206,6 +207,57 @@ def run_delivery_queue() -> bool:
     return True
 
 
+_last_autofill: float | None = None
+
+
+def run_autofill() -> bool:
+    """Abastece a fila sozinho ate cada canal ter QUEUE_TARGET_DAYS agendados.
+
+    Nao e cota diaria: e horizonte. Quando um canal alcanca o alvo, ele para de
+    puxar; quando voce pluga uma conta nova (horizonte zero), o abastecimento
+    volta a rodar sozinho para ela. E o que faz o fluxo continuar indefinidamente
+    sem ninguem apertar botao.
+
+    Duas travas de sobrevivencia, porque o alvo de 1 ano pede centenas de
+    episodios: teto por rodada e piso de disco livre.
+    """
+    global _last_autofill
+    if not settings.queue_autofill:
+        return False
+
+    agora = time.monotonic()
+    intervalo = settings.queue_scan_interval_hours * 3600
+    if _last_autofill is not None and agora - _last_autofill < intervalo:
+        return False
+    _last_autofill = agora
+
+    livre_gb = shutil.disk_usage(str(settings.data_dir)).free / 1e9
+    if livre_gb < settings.queue_min_free_gb:
+        log.warning("autofill pausado: %.0f GB livres, piso e %d GB",
+                    livre_gb, settings.queue_min_free_gb)
+        return False
+
+    # Nao empilha trabalho: se ainda ha episodio esperando, nao adianta puxar mais.
+    with db.connect() as conn:
+        na_fila = conn.execute(
+            "SELECT COUNT(*) FROM episodes WHERE status = 'queued'").fetchone()[0]
+    if na_fila >= settings.queue_max_per_run:
+        return False
+
+    try:
+        from scripts import fill_queue
+        faltam, _ = fill_queue.episodios_faltando(settings.queue_target_days)
+        if faltam <= 0:
+            return False
+        fill_queue.rodar(settings.queue_target_days,
+                         min(settings.queue_max_per_run - na_fila, faltam),
+                         aplicar=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 — abastecer e extra; nunca derruba o loop
+        log.warning("autofill falhou: %s", exc)
+        return False
+
+
 _last_stats_refresh: float | None = None
 STATS_INTERVAL = 1800  # atualiza as metricas no maximo a cada 30 min
 
@@ -374,8 +426,11 @@ def main() -> None:
             paid = run_pix_poll()
             expired = run_vip_expiry()
             vip_ep = run_vip_publish()
+            # Por ultimo: so abastece quando o resto ja foi atendido, para nao
+            # empilhar download novo sobre uma fila que ainda esta andando.
+            abastecido = run_autofill()
             did_work = (published or delivered or stats or acted or processed
-                        or paid or expired or vip_ep)
+                        or paid or expired or vip_ep or abastecido)
         except KeyboardInterrupt:
             log.info("encerrando")
             return
