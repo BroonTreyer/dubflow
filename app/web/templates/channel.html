@@ -64,6 +64,9 @@
           <td style="padding:8px 10px">
             {{ p.clip_yt_title or p.clip_title or p.episode_title or ('Corte #' ~ p.clip_id) }}
             {% if p.episode_title %}<div class="muted" style="font-size:.85em">{{ p.episode_title }}</div>{% endif %}
+            {% if p.status in ('failed', 'pending') and p.error %}
+            <div style="color:var(--err);font-size:.85em">motivo: {{ p.error }}</div>
+            {% endif %}
           </td>
           <td style="padding:8px 10px"><span style="text-transform:capitalize">{{ p.platform }}</span>
             <span class="muted">· {{ p.orientation }}</span></td>
