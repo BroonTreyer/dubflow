@@ -407,6 +407,9 @@ def channel_detail(request: Request, channel_id: int, salvo: int = 0):
             "ready": module.configured(channel_id) if module else False,
             "csrf": security.csrf_token(request),
             "salvo": bool(salvo),
+            # Painel por canal: videos publicados + totais deste canal.
+            "posts": db.posts_by_channel(channel_id),
+            "totals": db.channel_totals().get(channel_id, {}),
         },
     )
 

@@ -619,6 +619,12 @@ def main() -> int:
     check("post gravou channel_id", bool(alvo))
     check("plataforma veio do canal (nao do form)", alvo and alvo[0]["platform"] == "tiktok")
     check("nome do canal no post", alvo and alvo[0]["channel_name"] == "Curiosidades US")
+    # Painel por canal: renderiza a secao de videos publicados com o post do canal.
+    _cp = client.get(f"/channels/{c_tk}")
+    check("painel do canal abre (200)", _cp.status_code == 200, _cp.status_code)
+    check("painel do canal mostra 'Videos publicados'", "Vídeos publicados" in _cp.text)
+    check("painel do canal lista o post do canal",
+          bool(db.posts_by_channel(c_tk)) and "tiktok" in _cp.text.lower())
     before = len(db.list_posts(ep_id))
     r = client.post(f"/clips/{cids[0]}/publish_many",
                     data={"channel_ids": [str(c_yt), str(c_tk)], "orientation": "vertical",

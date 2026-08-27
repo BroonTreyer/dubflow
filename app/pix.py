@@ -52,7 +52,9 @@ def _headers() -> dict[str, str]:
 
 
 def _cents(amount_brl: float) -> int:
-    return max(int(round(amount_brl * 100)), 50)  # ambos exigem no minimo 50 centavos
+    # AbacatePay exige no minimo R$ 1,00; PushinPay R$ 0,50. Piso 100 atende os dois
+    # (os precos reais sao bem maiores, entao o piso nunca corta uma venda de verdade).
+    return max(int(round(amount_brl * 100)), 100)
 
 
 # --------------------------------------------------------------------- AbacatePay

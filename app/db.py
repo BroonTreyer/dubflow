@@ -737,6 +737,24 @@ def recent_clips(limit: int = 12) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def posts_by_channel(channel_id: int, limit: int = 200) -> list[dict[str, Any]]:
+    """Publicacoes de UM canal (os videos postados), com dados do corte/episodio e
+    metricas — base do painel por canal. Mais recentes primeiro."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT p.*, c.title AS clip_title, c.yt_title AS clip_yt_title,"
+            " c.thumb_path AS clip_thumb, c.thumb_vertical_path AS clip_thumb_vertical,"
+            " c.episode_id, e.title AS episode_title"
+            " FROM posts p JOIN clips c ON c.id = p.clip_id"
+            " JOIN episodes e ON e.id = c.episode_id"
+            " WHERE p.channel_id = ?"
+            " ORDER BY COALESCE(p.posted_at, p.scheduled_at, p.created_at) DESC, p.id DESC"
+            " LIMIT ?",
+            (channel_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def channel_totals() -> dict[int | None, dict[str, int]]:
     """Por canal (None = cofre global): posts publicados/pendentes e soma de metricas."""
     with connect() as conn:
