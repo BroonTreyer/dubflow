@@ -18,6 +18,13 @@ os.environ["SECRET_KEY"] = "chave-fixa-para-teste"
 
 from app.config import settings  # noqa: E402
 
+# Isola o teste do .env da maquina: tokens de gateway/telegram nao podem vazar e
+# disparar chamadas reais (ex.: cobranca no AbacatePay). Cada bloco que precisa de
+# um token o define explicitamente. (dotenv ja rodou no import de app.config.)
+for _leak in ("ABACATEPAY_TOKEN", "PUSHINPAY_TOKEN", "TELEGRAM_BOT_TOKEN",
+              "TELEGRAM_CHANNEL_ID", "TELEGRAM_VIP_CHAT_ID"):
+    os.environ.pop(_leak, None)
+
 _tmp = Path(tempfile.mkdtemp(prefix="dubflow_test_"))
 settings.data_dir = _tmp
 settings.db_path = _tmp / "test.db"

@@ -60,13 +60,19 @@ def _cents(amount_brl: float) -> int:
 # --------------------------------------------------------------------- AbacatePay
 
 
+# API v2 (checkout transparente): a chave abc_prod_/abc_dev_ e v2. O Pix vive no
+# recurso `transparents`, com o corpo aninhado {method, data:{...}}.
+_ABACATE_V2 = "https://api.abacatepay.com/v2/transparents"
+
+
 def _abacate_create(amount_brl: float) -> tuple[dict[str, Any] | None, str | None]:
     try:
         resp = requests.post(
-            "https://api.abacatepay.com/v1/pixQrCode/create",
-            json={"amount": _cents(amount_brl),
-                  "expiresIn": 3600,
-                  "description": "Assinatura DubFlow"},
+            f"{_ABACATE_V2}/create",
+            json={"method": "PIX",
+                  "data": {"amount": _cents(amount_brl),
+                           "expiresIn": 3600,
+                           "description": "Assinatura DubFlow"}},
             headers=_headers(),
             timeout=30,
         )
@@ -89,7 +95,7 @@ def _abacate_create(amount_brl: float) -> tuple[dict[str, Any] | None, str | Non
 def _abacate_status(txid: str) -> tuple[str | None, str | None]:
     try:
         resp = requests.get(
-            "https://api.abacatepay.com/v1/pixQrCode/check",
+            f"{_ABACATE_V2}/check",
             params={"id": txid},
             headers=_headers(),
             timeout=30,
@@ -113,7 +119,7 @@ def simulate_payment(txid: str) -> tuple[bool, str | None]:
         return False, "simulacao so disponivel na AbacatePay"
     try:
         resp = requests.post(
-            "https://api.abacatepay.com/v1/pixQrCode/simulate-payment",
+            f"{_ABACATE_V2}/simulate-payment",
             json={"id": txid},
             headers=_headers(),
             timeout=30,
