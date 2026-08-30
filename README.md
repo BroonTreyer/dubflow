@@ -188,6 +188,22 @@ esses números pelo bot). Só popula depois que as contas estão conectadas.
   uma vez para gerar o refresh token). Vídeo vertical vira **Short**; escolhendo a
   orientação horizontal no painel, o corte 16:9 sobe como **vídeo comum**. Privacidade
   `private` por padrão (`YOUTUBE_PRIVACY`).
+
+### Reautorizar os canais
+
+```powershell
+.\scripts\reautorizar_canais.ps1              # todos, um a um
+.\scripts\reautorizar_canais.ps1 -SoConferir  # só audita, não reautoriza
+```
+
+Percorre os canais parando entre um e outro para você **trocar de conta do
+Google**. Token com apenas `youtube.upload` publica, mas não lê a identidade —
+é por isso que um canal aparece como "Canal YT 1" em vez do nome real, e o
+diagnóstico de falha fica cego. O escopo completo (`upload` + `readonly`) resolve.
+
+Autorizar um canal logado na conta de outro grava o token errado no cofre e o
+corte vai para o canal errado: confira o nome na tela do Google antes de aceitar.
+Depois, `scripts/channel_identity.py --apply` grava os nomes reais no painel.
 - **Instagram** — a Graph API não aceita upload: ela busca o vídeo por URL.
   `PUBLIC_BASE_URL` precisa apontar para este servidor acessível pela Meta
   (cloudflared/ngrok resolve). Requer conta Business/Creator.
