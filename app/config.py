@@ -54,10 +54,17 @@ class Settings:
     whisper_model: str = os.getenv("WHISPER_MODEL", "large-v3")
     whisper_device: str = os.getenv("WHISPER_DEVICE", "cuda")
     whisper_compute: str = os.getenv("WHISPER_COMPUTE", "float16")
-    # Cookies do navegador para o yt-dlp. Depois de uma sequencia de downloads o
-    # YouTube passa a exigir "Sign in to confirm you're not a bot" para esta
-    # maquina, e ai nenhuma extracao passa sem sessao. Valor: chrome, firefox,
-    # edge, brave... Vazio = sem cookies (funciona ate o bloqueio aparecer).
+    # Solver do desafio JS do YouTube ("n challenge"), baixado sob demanda pelo
+    # proprio yt-dlp. Sem ele o extractor cai em formatos degradados ou no
+    # "Sign in to confirm you're not a bot" — foi o que reprovou os eps 16 a 31.
+    # Precisa do deno instalado (ensure_js_runtime acha sozinho). Vazio = desliga.
+    ytdlp_remote_components: str = os.getenv("YTDLP_REMOTE_COMPONENTS", "ejs:github")
+    # Sessao do YouTube, so como ultimo recurso (o solver acima resolve o caso
+    # comum). Arquivo cookies.txt exportado do navegador; tem prioridade sobre
+    # ler o navegador direto, que no Windows falha desde o Chrome 127 com
+    # "Failed to decrypt with DPAPI" (yt-dlp#10927), no Chrome e no Edge.
+    ytdlp_cookies_file: str = os.getenv("YTDLP_COOKIES_FILE", "")
+    # Valor: chrome, firefox, edge, brave... Vazio = sem cookies.
     ytdlp_cookies_browser: str = os.getenv("YTDLP_COOKIES_BROWSER", "")
     source_lang: str = os.getenv("SOURCE_LANG", "")  # "" = autodetect
     target_lang: str = os.getenv("TARGET_LANG", "pt-BR")
@@ -274,6 +281,29 @@ TARGET_LANGUAGES: dict[str, dict[str, str]] = {
 MARKET_OPTIONS: list[str] = [v["market"] for v in TARGET_LANGUAGES.values()] + ["OUTRO"]
 
 
+class _SemQuedaDeCliente(logging.Filter):
+    """Descarta o barulho de navegador que fechou a aba, no Windows.
+
+    A fila consulta `/api/episodes/<id>` a cada 4s; fechar a aba no meio de uma
+    resposta faz o Proactor do asyncio estourar `ConnectionResetError` dentro de
+    `_call_connection_lost` e despejar um traceback inteiro. Nao ha nada a
+    corrigir na aplicacao — o cliente sumiu, so isso —, mas o volume esconde o
+    que importa: em 26/08 foram 378 tracebacks em `web.log`, quase metade do
+    arquivo, com os erros de verdade perdidos no meio.
+
+    Filtra so este caso: mensagem conhecida E excecao de conexao perdida.
+    """
+
+    _RUIDOS = ("_call_connection_lost", "socket.send() raised exception")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not any(ruido in record.getMessage() for ruido in self._RUIDOS):
+            return True
+        excecao = record.exc_info[1] if record.exc_info else None
+        return not (excecao is None
+                    or isinstance(excecao, (ConnectionResetError, ConnectionAbortedError)))
+
+
 def configure_logging(component: str, level: int = logging.INFO) -> None:
     """Loga no console e tambem em data/logs/<component>.log, com rotacao.
 
@@ -301,3 +331,7 @@ def configure_logging(component: str, level: int = logging.INFO) -> None:
         handlers=handlers,
         force=True,  # substitui qualquer basicConfig anterior
     )
+
+    # No logger de origem, e nao nos handlers: o filtro precisa valer tanto para
+    # o arquivo quanto para o console.
+    logging.getLogger("asyncio").addFilter(_SemQuedaDeCliente())

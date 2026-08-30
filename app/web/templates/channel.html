@@ -43,6 +43,26 @@
       <div class="muted">curtidas</div></div>
   </div>
 
+  {% if refeitas is not none %}
+  <div class="note" style="margin:12px 0">
+    {{ refeitas }} publicação(ões) de volta para a fila.
+    {% if refeitas %}O worker precisa estar de pé para pegá-las.{% endif %}
+  </div>
+  {% endif %}
+
+  {% if falhadas %}
+  <div class="note" style="margin:12px 0;border-color:var(--err)">
+    <strong>{{ falhadas }} publicação(ões) falharam neste canal.</strong>
+    Corrija a causa (veja o motivo em cada linha) e devolva para a fila —
+    sem isso elas não voltam sozinhas: já esgotaram as tentativas.
+    <form method="post" action="/channels/{{ channel.id }}/posts/retry-failed"
+          style="margin-top:8px">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="ghost">Republicar as {{ falhadas }} que falharam</button>
+    </form>
+  </div>
+  {% endif %}
+
   {% if posts %}
   <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;margin-top:8px;min-width:640px">
@@ -72,6 +92,15 @@
             <span class="muted">· {{ p.orientation }}</span></td>
           <td style="padding:8px 10px">
             <span class="tag {% if p.status == 'published' %}done{% elif p.status == 'failed' %}failed{% else %}run{% endif %}">{{ p.status }}</span>
+            {% if p.status == 'failed' %}
+            <form method="post" action="/channels/{{ channel.id }}/posts/retry-failed"
+                  style="margin-top:6px">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="post_id" value="{{ p.id }}">
+              <button type="submit" class="ghost" style="padding:2px 8px;font-size:12px"
+                      title="zera as tentativas e devolve para a fila de publicacao">republicar</button>
+            </form>
+            {% endif %}
           </td>
           <td style="padding:8px 10px" class="muted">{{ (p.posted_at or p.scheduled_at or p.created_at or '')[:16] | replace('T', ' ') }}</td>
           <td style="padding:8px 10px;text-align:right">{{ p.views if p.views is not none else '—' }}</td>

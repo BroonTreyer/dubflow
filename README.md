@@ -36,6 +36,20 @@ Preencha no `.env` — os dois são obrigatórios:
 `SECRET_KEY` pode ficar vazia: é gerada e guardada em `data/.secret_key` na
 primeira execução.
 
+### O YouTube exige um runtime JS
+
+Instale o **deno** (`winget install DenoLand.Deno`). O extractor do YouTube
+precisa resolver um desafio em JavaScript; sem runtime, o yt-dlp devolve
+formatos degradados e logo em seguida *"Sign in to confirm you're not a bot"* —
+foi o que reprovou 16 episódios em agosto. O `ensure_js_runtime()` acha o deno
+mesmo fora do PATH do processo, e `YTDLP_REMOTE_COMPONENTS=ejs:github` (padrão)
+deixa o yt-dlp baixar o solver.
+
+O erro **não** era falta de sessão, então cookies não são necessários. Se um dia
+forem, exporte um `cookies.txt` para `YTDLP_COOKIES_FILE`: ler o Chrome ou o
+Edge direto não funciona mais no Windows (App-Bound Encryption, *"Failed to
+decrypt with DPAPI"*, [yt-dlp#10927](https://github.com/yt-dlp/yt-dlp/issues/10927)).
+
 ## Uso
 
 ```powershell
@@ -46,6 +60,34 @@ Abra <http://127.0.0.1:8030>, cole o link, escolha a origem do conteúdo e cliqu
 em Processar. O worker pega da fila; o painel mostra o progresso.
 
 Para rodar separado: `.\run.ps1 -Only web` e `.\run.ps1 -Only worker`.
+
+### Atalhos na área de trabalho
+
+```powershell
+.\scripts\criar_atalhos.ps1     # uma vez por máquina
+```
+
+Cria **Dubflow** (sobe worker + bot + painel e abre o navegador) e **Parar
+Dubflow** (desliga os três). Cada parte só sobe se ainda não estiver rodando,
+então clicar duas vezes não duplica nada — dois workers na mesma fila brigariam
+pelo mesmo episódio, e um worker novo devolve para a fila todo episódio em
+estado não-terminal.
+
+Antes de subir o worker, o atalho conta as publicações agendadas com a hora já
+vencida e **pergunta**: a máquina desligada por dias acumula fila, e subir o
+worker jogaria tudo no ar no mesmo minuto. Sem resposta, o worker não sobe. Ao
+desligar, o outro atalho avisa se há episódio no meio do caminho — esse recomeça
+do zero na próxima vez.
+
+Opções: `-SemNavegador`, `-SemBot`, `-SemWorker` (só o painel: olhar a fila sem
+processar nem publicar nada).
+
+### Reprocessar o que falhou
+
+Cada episódio terminal tem **reprocessar** na própria linha da fila. Quando a
+falha é de lote — yt-dlp bloqueado, provedor de IA fora do ar — o cabeçalho da
+fila mostra *"Reprocessar os N que falharam"*, que devolve todos de uma vez sem
+tocar em quem está rodando.
 
 ## Testes
 

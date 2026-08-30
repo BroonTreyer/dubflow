@@ -35,7 +35,7 @@ def _listar(source: sources.Source, limite: int) -> list[dict]:
     """Lista os videos do canal SEM baixar (modo flat: rapido e barato)."""
     ingest.ensure_js_runtime()
     cmd = [sys.executable, "-m", "yt_dlp", "--flat-playlist", "--dump-json",
-           "--playlist-end", str(limite), source.url]
+           *ingest.yt_args(), "--playlist-end", str(limite), source.url]
     out = subprocess.run(cmd, capture_output=True, text=True,
                          encoding="utf-8", errors="replace")
     itens = []
@@ -53,7 +53,8 @@ def _idade_horas(video_id: str) -> float | None:
     ingest.ensure_js_runtime()
     out = subprocess.run(
         [sys.executable, "-m", "yt_dlp", "--no-playlist", "--dump-single-json",
-         "--skip-download", f"https://www.youtube.com/watch?v={video_id}"],
+         *ingest.yt_args(), "--skip-download",
+         f"https://www.youtube.com/watch?v={video_id}"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if out.returncode != 0:

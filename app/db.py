@@ -475,6 +475,37 @@ def list_episodes(limit: int = 50) -> list[dict[str, Any]]:
     return [_episode_row(r) for r in rows]
 
 
+def count_episodes_by_status() -> dict[str, int]:
+    """Quantos episodios em cada estado. Base do botao de reprocessar em lote."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS total FROM episodes GROUP BY status"
+        ).fetchall()
+    return {r["status"]: r["total"] for r in rows}
+
+
+def requeue_failed_episodes() -> list[int]:
+    """Devolve para a fila TODO episodio em `failed`. Retorna os ids afetados.
+
+    Mesmos campos do reprocessar de um so (status/progress/error): `started_at`
+    fica como esta porque o runner o reescreve ao pegar o episodio. Um unico
+    UPDATE condicionado a status='failed' — se o worker falhar outro episodio no
+    meio, ele entra na proxima rodada, nunca some.
+    """
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM episodes WHERE status = 'failed' ORDER BY id"
+        ).fetchall()]
+        if ids:
+            conn.execute(
+                "UPDATE episodes SET status = 'queued', progress = 0, error = NULL,"
+                " updated_at = ? WHERE status = 'failed'",
+                (now(),),
+            )
+    return ids
+
+
 def claim_next_queued() -> dict[str, Any] | None:
     """Marca o episodio mais antigo da fila como `downloading` e o devolve.
 
@@ -599,6 +630,37 @@ def update_post(post_id: int, **fields: Any) -> None:
 
 
 MAX_PUBLISH_ATTEMPTS = 4
+
+
+def requeue_failed_posts(channel_id: int | None = None, post_id: int | None = None) -> list[int]:
+    """Devolve publicacao(oes) em `failed` para a fila. Retorna os ids afetados.
+
+    Sem isto, publicacao que esgotou as tentativas e um beco sem saida: o motivo
+    costuma ser externo e corrigivel (a API do canal desativada no Google Cloud,
+    canal sem verificacao), mas nem consertando a causa o corte voltava a sair —
+    `pending_posts` filtra por `attempts < MAX_PUBLISH_ATTEMPTS`. Por isso o
+    contador tambem zera aqui.
+
+    `scheduled_at` fica como esta: a hora ja passou, entao o worker pega na
+    proxima rodada, que e o que se espera de um "republicar".
+    """
+    filtros, valores = ["status = 'failed'"], []
+    if channel_id is not None:
+        filtros.append("channel_id = ?")
+        valores.append(channel_id)
+    if post_id is not None:
+        filtros.append("id = ?")
+        valores.append(post_id)
+    onde = " AND ".join(filtros)
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        ids = [r["id"] for r in conn.execute(
+            f"SELECT id FROM posts WHERE {onde} ORDER BY id", valores).fetchall()]
+        if ids:
+            conn.execute(
+                f"UPDATE posts SET status = 'pending', attempts = 0, error = NULL"
+                f" WHERE {onde}", valores)
+    return ids
 
 
 def pending_posts() -> list[dict[str, Any]]:

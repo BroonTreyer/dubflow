@@ -61,18 +61,48 @@ def ensure_js_runtime() -> str | None:
     return None
 
 
+def _desafio_args() -> list[str]:
+    """Solver do desafio JS do YouTube ("n challenge").
+
+    Sem ele o yt-dlp avisa "n challenge solving failed: Some formats may be
+    missing" e a extracao degrada ate virar "Sign in to confirm you're not a
+    bot" — o erro que reprovou os eps 16 a 31. O solver e baixado sob demanda
+    pelo proprio yt-dlp e roda no deno; nao substitui `ensure_js_runtime()`.
+    """
+    componentes = (settings.ytdlp_remote_components or "").strip()
+    return ["--remote-components", componentes] if componentes else []
+
+
 def _cookie_args() -> list[str]:
-    """`--cookies-from-browser` quando configurado. Sem isso, uma sequencia de
-    downloads faz o YouTube exigir verificacao anti-bot e tudo passa a falhar."""
+    """Sessao do YouTube, quando configurada — ultimo recurso.
+
+    Arquivo (`YTDLP_COOKIES_FILE`) antes do navegador (`YTDLP_COOKIES_BROWSER`):
+    no Windows, ler o navegador direto falha desde o Chrome 127 com "Failed to
+    decrypt with DPAPI" (yt-dlp#10927) — vale para Chrome e Edge, que cifram o
+    banco de cookies com App-Bound Encryption. Firefox ainda funciona.
+    """
+    arquivo = (settings.ytdlp_cookies_file or "").strip()
+    if arquivo:
+        return ["--cookies", arquivo]
     navegador = (settings.ytdlp_cookies_browser or "").strip()
     return ["--cookies-from-browser", navegador] if navegador else []
+
+
+def yt_args() -> list[str]:
+    """O que TODA invocacao do yt-dlp precisa: solver do desafio + sessao.
+
+    Publica de proposito — `scripts/fill_queue.py` chama o yt-dlp por conta
+    propria e precisa dos mesmos argumentos, senao o abastecimento automatico
+    volta a esbarrar no anti-bot enquanto o pipeline passa.
+    """
+    return [*_desafio_args(), *_cookie_args()]
 
 
 def probe(url: str) -> dict[str, Any]:
     """Le os metadados sem baixar o video."""
     ensure_js_runtime()
     out = subprocess.run(
-        [*YTDLP, "--dump-single-json", "--no-playlist", *_cookie_args(), url],
+        [*YTDLP, "--dump-single-json", "--no-playlist", *yt_args(), url],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -111,7 +141,7 @@ def download(url: str, dest_dir: Path) -> Path:
     cmd = [
         *YTDLP,
         "--no-playlist",
-        *_cookie_args(),
+        *yt_args(),
         "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(target),

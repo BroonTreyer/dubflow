@@ -10,6 +10,7 @@ filtro `subtitles` do ffmpeg.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -91,7 +92,26 @@ def main() -> int:
     check("ass gerado", ass.exists())
     if ass.exists():
         content = ass.read_text(encoding="utf-8")
-        check("3 dialogos", content.count("Dialogue:") == 3, content.count("Dialogue:"))
+        dialogos = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+
+        # Nao da para exigir "um dialogo por segmento": `split_oversized` reparte
+        # a fala que nao cabe na tela, entao 3 segmentos viram 3 OU MAIS cues.
+        # O que precisa valer e o contrario — nenhuma cue estourando o limite.
+        check("um cue por segmento, ou mais se precisou repartir",
+              len(dialogos) >= len(segments), len(dialogos))
+
+        estouradas = []
+        for linha in dialogos:
+            texto = linha.split(",", 9)[9]
+            texto = re.sub(r"\{[^}]*\}", "", texto)  # tira as marcas de karaoke
+            for visivel in texto.split("\\N"):
+                if len(visivel) > subtitles.CLIP_MAX_CHARS_PER_LINE:
+                    estouradas.append(visivel)
+            if texto.count("\\N") + 1 > subtitles.CLIP_MAX_LINES:
+                estouradas.append(texto)
+        check(f"nenhuma linha passa de {subtitles.CLIP_MAX_CHARS_PER_LINE} caracteres"
+              f" nem de {subtitles.CLIP_MAX_LINES} linhas", not estouradas, estouradas[:3])
+
         check("acentuacao preservada", "coracao" in content)
         check("primeiro dialogo em 0:00:00.50", "0:00:00.50" in content, content[-400:])
 

@@ -108,12 +108,15 @@ def logout():
 
 
 @app.get("/", response_class=HTMLResponse, dependencies=panel)
-def index(request: Request):
+def index(request: Request, refeitos: int | None = None):
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "episodes": db.list_episodes(),
+            # Conta no banco, nao na lista: `list_episodes` traz so as ultimas 50.
+            "failed_count": db.count_episodes_by_status().get("failed", 0),
+            "refeitos": refeitos,
             "publishers": publisher_status(),
             "license_states": db.LICENSE_STATES,
             "target_langs": TARGET_LANGS,
@@ -381,10 +384,12 @@ def update_channel_settings(request: Request, channel_id: int, name: str = Form(
 
 
 @app.get("/channels/{channel_id}", response_class=HTMLResponse, dependencies=panel)
-def channel_detail(request: Request, channel_id: int, salvo: int = 0):
+def channel_detail(request: Request, channel_id: int, salvo: int = 0,
+                   refeitas: int | None = None):
     channel = db.get_channel(channel_id)
     if channel is None:
         raise HTTPException(404, "canal nao encontrado")
+    posts = db.posts_by_channel(channel_id)
     platform = channel["platform"]
     keys = credentials.MANAGED.get(platform, [])
     values = {
@@ -408,10 +413,30 @@ def channel_detail(request: Request, channel_id: int, salvo: int = 0):
             "csrf": security.csrf_token(request),
             "salvo": bool(salvo),
             # Painel por canal: videos publicados + totais deste canal.
-            "posts": db.posts_by_channel(channel_id),
+            "posts": posts,
             "totals": db.channel_totals().get(channel_id, {}),
+            "falhadas": sum(1 for p in posts if p["status"] == "failed"),
+            "refeitas": refeitas,
         },
     )
+
+
+@app.post("/channels/{channel_id}/posts/retry-failed", dependencies=panel)
+def retry_failed_posts(request: Request, channel_id: int,
+                       post_id: int | None = Form(None), csrf: str = Form("")):
+    """Devolve para a fila as publicacoes que falharam neste canal.
+
+    Com `post_id`, so aquela. O motivo de falha aqui e quase sempre externo e
+    corrigivel — API do canal desativada no Google Cloud, canal sem verificacao
+    para thumbnail — e ate agora, mesmo consertando a causa, o corte nao voltava
+    a sair sozinho: tinha esgotado as tentativas.
+    """
+    security.require_csrf(request, csrf)
+    if db.get_channel(channel_id) is None:
+        raise HTTPException(404, "canal nao encontrado")
+    ids = db.requeue_failed_posts(channel_id=channel_id, post_id=post_id)
+    log.info("canal %s: %d publicacao(oes) de volta para a fila %s", channel_id, len(ids), ids)
+    return RedirectResponse(f"/channels/{channel_id}?refeitas={len(ids)}", status_code=303)
 
 
 @app.post("/channels/{channel_id}/credentials", dependencies=panel)
@@ -533,6 +558,20 @@ def set_segment(request: Request, episode_id: int,
 # Estados em que reprocessar e seguro. Reenfileirar um episodio em andamento
 # colocaria dois workers no mesmo job, disputando GPU e escrevendo os mesmos arquivos.
 RETRYABLE = {"failed", "done", "canceled"}
+
+
+@app.post("/episodes/retry-failed", dependencies=panel)
+def retry_failed_episodes(request: Request, csrf: str = Form("")):
+    """Devolve para a fila todos os episodios que falharam, de uma vez.
+
+    Serve para a falha que atinge o lote inteiro (yt-dlp bloqueado, provedor de
+    IA fora do ar): resolvido o motivo, a fila inteira volta com um clique em vez
+    de um episodio por vez. Nao toca em quem esta rodando.
+    """
+    security.require_csrf(request, csrf)
+    ids = db.requeue_failed_episodes()
+    log.info("reprocessar em lote: %d episodio(s) de volta para a fila %s", len(ids), ids)
+    return RedirectResponse(f"/?refeitos={len(ids)}", status_code=303)
 
 
 @app.post("/episodes/{episode_id}/retry", dependencies=panel)

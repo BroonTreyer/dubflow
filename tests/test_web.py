@@ -66,6 +66,28 @@ def main() -> int:
     check("log em arquivo criado", (settings.data_dir / "logs" / "web.log").exists(),
           "web.log nao foi criado")
 
+    # Aba fechada no meio de uma resposta enche o log de traceback do asyncio
+    # (378 em web.log em 26/08, quase metade do arquivo). O filtro corta ESSE
+    # caso e so ele — erro de verdade no asyncio continua aparecendo.
+    import logging as _logging
+    from app.config import _SemQuedaDeCliente
+
+    _filtro = _SemQuedaDeCliente()
+
+    def _passa(msg: str, exc: BaseException | None = None) -> bool:
+        registro = _logging.LogRecord("asyncio", _logging.ERROR, "x.py", 1, msg, None,
+                                      (type(exc), exc, None) if exc else None)
+        return _filtro.filter(registro)
+
+    _QUEDA = "Exception in callback _ProactorBasePipeTransport._call_connection_lost()"
+    check("queda de cliente nao vai para o log",
+          not _passa(_QUEDA, ConnectionResetError(10054, "conexao cancelada")))
+    check("aviso de socket.send tambem nao", not _passa("socket.send() raised exception."))
+    check("erro real do asyncio continua passando",
+          _passa("Task exception was never retrieved", ValueError("bug real")))
+    check("mesmo callback com excecao grave continua passando",
+          _passa(_QUEDA, MemoryError("grave")))
+
     anon = TestClient(app)
 
     print("autenticacao (achado 2)")
@@ -461,6 +483,55 @@ def main() -> int:
     print("limite de tentativas (achado 21)")
     db.update_post(pid, attempts=db.MAX_PUBLISH_ATTEMPTS)
     check("post esgotado sai da fila", len(db.pending_posts()) == 0)
+
+    print("republicar o que falhou")
+    # Publicacao que esgotou as tentativas era um beco sem saida: mesmo depois de
+    # corrigir a causa (API do canal desativada, canal sem verificacao) ela nao
+    # voltava, porque a fila filtra por attempts < MAX. Zerar o contador faz parte.
+    c_pub = db.create_channel("Canal do republicar", "youtube", "BR")
+    clip_pub = db.list_clips(ep_id)[0]["id"]
+    p_fail = db.create_post(clip_pub, "youtube", scheduled_at=db.now(), channel_id=c_pub)
+    db.update_post(p_fail, status="failed", attempts=db.MAX_PUBLISH_ATTEMPTS,
+                   error="permissao negada")
+    check("falhado nao esta na fila", not any(p["id"] == p_fail for p in db.pending_posts()))
+
+    refeitos = db.requeue_failed_posts(channel_id=c_pub)
+    check("requeue devolve o id", refeitos == [p_fail], refeitos)
+    voltou = [p for p in db.list_posts(ep_id) if p["id"] == p_fail][0]
+    check("volta como pending, sem erro e com tentativas zeradas",
+          voltou["status"] == "pending" and voltou["error"] is None and voltou["attempts"] == 0,
+          dict(status=voltou["status"], attempts=voltou["attempts"]))
+    check("e reaparece na fila do worker", any(p["id"] == p_fail for p in db.pending_posts()))
+
+    # Nao encosta em publicacao de OUTRO canal.
+    c_outro = db.create_channel("Canal vizinho", "youtube", "BR")
+    db.update_post(p_fail, status="failed", attempts=db.MAX_PUBLISH_ATTEMPTS)
+    check("filtro por canal nao pega o vizinho", db.requeue_failed_posts(channel_id=c_outro) == [])
+    check("o falhado continua falhado",
+          [p for p in db.list_posts(ep_id) if p["id"] == p_fail][0]["status"] == "failed")
+
+    # Pela rota do painel, com CSRF, e so o post pedido.
+    tok_pub = csrf_of(client)
+    r_pub = client.post(f"/channels/{c_pub}/posts/retry-failed",
+                        data={"csrf": tok_pub, "post_id": p_fail}, follow_redirects=False)
+    check("rota republica e redireciona com a contagem",
+          r_pub.status_code == 303 and "refeitas=1" in r_pub.headers.get("location", ""),
+          f'{r_pub.status_code} {r_pub.headers.get("location")}')
+    check("post voltou pela rota",
+          [p for p in db.list_posts(ep_id) if p["id"] == p_fail][0]["status"] == "pending")
+
+    db.update_post(p_fail, status="failed", attempts=db.MAX_PUBLISH_ATTEMPTS)
+    r_semtok = client.post(f"/channels/{c_pub}/posts/retry-failed",
+                           data={"csrf": "errado"}, follow_redirects=False)
+    check("sem csrf valido nao republica", r_semtok.status_code >= 400, r_semtok.status_code)
+    check("canal inexistente da 404",
+          client.post("/channels/99999/posts/retry-failed",
+                      data={"csrf": tok_pub}, follow_redirects=False).status_code == 404)
+    check("o aviso do canal mostra a contagem",
+          "Republicar as 1 que falharam" in client.get(f"/channels/{c_pub}").text)
+
+    # Some do caminho para nao contaminar os testes seguintes.
+    db.update_post(p_fail, status="canceled", attempts=0, error=None)
     db.update_post(pid, attempts=0)
 
     print("analises / metricas dos videos")
@@ -870,6 +941,55 @@ def main() -> int:
     check("inexistente da 404",
           client.post("/episodes/99999/delete", data={"csrf": tok},
                       follow_redirects=False).status_code == 404)
+
+    print()
+    print("reprocessar em lote os que falharam")
+    # Falha em lote (yt-dlp bloqueado, provedor de IA fora): um clique devolve
+    # todos para a fila sem tocar em quem esta rodando.
+    ep_f1 = db.create_episode("https://youtu.be/falhou-1", "owned")
+    ep_f2 = db.create_episode("https://youtu.be/falhou-2", "owned")
+    for ep in (ep_f1, ep_f2):
+        db.update_episode(ep, status="failed", progress=0.4, error="yt-dlp falhou")
+    ep_rodando = db.create_episode("https://youtu.be/rodando", "owned")
+    db.update_episode(ep_rodando, status="transcribing", progress=0.3)
+
+    fila = client.get("/").text
+    check("botao do lote aparece com a contagem certa",
+          'action="/episodes/retry-failed"' in fila and "Reprocessar os 2 que falharam" in fila)
+    check("cada linha terminal ganha o reprocessar",
+          f'action="/episodes/{ep_f1}/retry"' in fila)
+
+    tok = csrf_of(client)
+    r_lote = client.post("/episodes/retry-failed", data={"csrf": tok}, follow_redirects=False)
+    check("retry-failed redireciona com a contagem",
+          r_lote.status_code == 303 and "refeitos=2" in r_lote.headers.get("location", ""),
+          f'{r_lote.status_code} {r_lote.headers.get("location")}')
+    check("os dois falhados voltaram para a fila",
+          [db.get_episode(e)["status"] for e in (ep_f1, ep_f2)] == ["queued", "queued"],
+          [db.get_episode(e)["status"] for e in (ep_f1, ep_f2)])
+    check("erro e progresso limpos",
+          all(db.get_episode(e)["error"] is None and db.get_episode(e)["progress"] == 0
+              for e in (ep_f1, ep_f2)))
+    check("nao encosta em quem esta rodando",
+          db.get_episode(ep_rodando)["status"] == "transcribing",
+          db.get_episode(ep_rodando)["status"])
+
+    # Sem CSRF nao reprocessa: recolocar a fila inteira e caro (GPU + API).
+    db.update_episode(ep_f1, status="failed", error="de novo")
+    r_semtok = client.post("/episodes/retry-failed", data={"csrf": "errado"},
+                           follow_redirects=False)
+    check("sem csrf valido nao reprocessa em lote", r_semtok.status_code >= 400,
+          r_semtok.status_code)
+    check("o falhado continua falhado", db.get_episode(ep_f1)["status"] == "failed",
+          db.get_episode(ep_f1)["status"])
+
+    # Sem nada em falha, o botao nem aparece e a rota nao quebra.
+    db.update_episode(ep_f1, status="done", error=None)
+    r_vazio = client.post("/episodes/retry-failed", data={"csrf": tok}, follow_redirects=False)
+    check("sem falhados, responde 0", "refeitos=0" in r_vazio.headers.get("location", ""),
+          r_vazio.headers.get("location"))
+    check("botao do lote some quando nao ha falha",
+          "retry-failed" not in client.get("/").text)
 
     print()
     if failures:
