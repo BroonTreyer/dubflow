@@ -14,6 +14,7 @@ LINE = (38, 44, 54)
 ACCENT = (79, 140, 255)
 TEXTO = (230, 233, 239)
 ERR = (248, 81, 73)
+WARN = (210, 153, 34)
 
 S = 512
 TAMANHOS = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
@@ -55,6 +56,24 @@ def parar() -> Path:
     return destino
 
 
+def reautorizar() -> Path:
+    """Seta circular: reconectar as contas. Amarelo = mexe em credencial."""
+    img, d = _base()
+    cx, cy, r = S * 0.5, S * 0.42, S * 0.155
+    grossura = int(S * 0.055)
+    # Arco aberto no canto superior direito, onde entra a ponta da seta.
+    d.arc([cx - r, cy - r, cx + r, cy + r], start=310, end=210, fill=WARN, width=grossura)
+    ponta = S * 0.075
+    topo = (cx + r * 0.72, cy - r * 0.72)
+    d.polygon([(topo[0] - ponta, topo[1] - ponta * 0.15),
+               (topo[0] + ponta * 0.35, topo[1] - ponta),
+               (topo[0] + ponta * 0.2, topo[1] + ponta * 0.8)], fill=WARN)
+    _legenda(d, cx, WARN)
+    destino = ASSETS / "dubflow_contas.ico"
+    img.save(destino, sizes=TAMANHOS)
+    return destino
+
+
 if __name__ == "__main__":
-    for caminho in (abrir(), parar()):
+    for caminho in (abrir(), parar(), reautorizar()):
         print(f"{caminho} gerado")

@@ -67,8 +67,9 @@ Para rodar separado: `.\run.ps1 -Only web` e `.\run.ps1 -Only worker`.
 .\scripts\criar_atalhos.ps1     # uma vez por máquina
 ```
 
-Cria **Dubflow** (sobe worker + bot + painel e abre o navegador) e **Parar
-Dubflow** (desliga os três). Cada parte só sobe se ainda não estiver rodando,
+Cria **Dubflow** (sobe worker + bot + painel e abre o navegador), **Parar
+Dubflow** (desliga os três) e **Reautorizar Canais** (reconecta as contas do
+YouTube, veja abaixo). Cada parte só sobe se ainda não estiver rodando,
 então clicar duas vezes não duplica nada — dois workers na mesma fila brigariam
 pelo mesmo episódio, e um worker novo devolve para a fila todo episódio em
 estado não-terminal.
