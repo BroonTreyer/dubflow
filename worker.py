@@ -41,6 +41,10 @@ def run_episode_queue() -> bool:
     try:
         runner.process_episode(episode["id"])
         log.info("episodio %s concluido", episode["id"])
+    except runner.Paused:
+        # Parada pedida, nao falha: o episodio ficou em 'paused' com os artefatos
+        # gravados e volta do mesmo ponto quando alguem retomar.
+        log.info("episodio %s pausado", episode["id"])
     except Exception as exc:  # noqa: BLE001 — o runner ja registrou; o worker segue vivo
         log.error("episodio %s falhou: %s", episode["id"], exc)
     return True

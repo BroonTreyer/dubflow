@@ -54,6 +54,8 @@
   .tag.done { color: var(--ok); border-color: #24512f; }
   .tag.failed { color: var(--err); border-color: #5c2226; }
   .tag.run { color: var(--warn); border-color: #5a4415; }
+  /* Pausado nao e erro nem execucao: cinza, para nao competir com os dois. */
+  .tag.paused { color: var(--muted); border-color: var(--line); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
   video { width: 100%; border-radius: 8px; background: #000; }
   .note {

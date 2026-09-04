@@ -2,6 +2,12 @@
 
 Cada etapa grava o estado no banco antes de comecar, entao a UI mostra o
 progresso real e um episodio que falha diz exatamente onde parou.
+
+`process_episode` e **retomavel**: toda etapa cara grava seu artefato em disco e
+registra o caminho em `paths`, e na entrada da etapa seguinte o artefato existente
+e reaproveitado em vez de refeito. Rodar de novo um episodio que parou no meio
+custa so o que faltava. Isso vale para os tres casos que antes recomecavam do
+zero: pausa pedida no painel, worker reiniciado e episodio que falhou tarde.
 """
 
 from __future__ import annotations
@@ -18,6 +24,32 @@ from app.pipeline import (archive, clips, distribute, ingest, subtitles, thumbna
                           transcribe, translate)
 
 log = logging.getLogger(__name__)
+
+
+class Paused(Exception):
+    """Pausa pedida pelo painel. Nao e falha: o episodio para num ponto seguro,
+    com os artefatos ja gravados, e `db.resume_episode` o devolve para a fila."""
+
+
+def _checkpoint(episode_id: int, paths: dict[str, str]) -> None:
+    """Ponto seguro entre etapas: grava o que ja existe e para se pediram pausa.
+
+    Chamado DEPOIS de a etapa gravar seu artefato, nunca antes — parar antes de
+    persistir jogaria fora o trabalho que a pausa deveria preservar.
+    """
+    if db.pause_requested(episode_id):
+        db.update_episode(episode_id, status="paused", pause_requested=0, paths=paths)
+        log.info("[ep %s] pausado a pedido", episode_id)
+        raise Paused(episode_id)
+
+
+def _reaproveitar(paths: dict[str, str], chave: str) -> Path | None:
+    """Artefato desta etapa, se ele sobreviveu de uma execucao anterior."""
+    valor = paths.get(chave)
+    if not valor:
+        return None
+    caminho = Path(valor)
+    return caminho if caminho.exists() else None
 
 
 def _set(episode_id: int, status: str, progress: float, **extra: Any) -> None:
@@ -99,65 +131,90 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         # estimado absurdo se contasse dali.
         db.update_episode(episode_id, started_at=db.now())
         _set(episode_id, "downloading", 0.02)
-        info = ingest.probe(episode["source_url"])
-        db.update_episode(
-            episode_id,
-            video_id=info["video_id"],
-            title=info["title"],
-            channel=info["channel"],
-            duration=info["duration"],
-            meta=info,
-        )
 
-        video_path = ingest.download(episode["source_url"], work_dir)
-        paths["source_video"] = str(video_path)
+        video_path = _reaproveitar(paths, "source_video")
+        if video_path is None:
+            info = ingest.probe(episode["source_url"])
+            db.update_episode(
+                episode_id,
+                video_id=info["video_id"],
+                title=info["title"],
+                channel=info["channel"],
+                duration=info["duration"],
+                meta=info,
+            )
+            video_path = ingest.download(episode["source_url"], work_dir)
+            paths["source_video"] = str(video_path)
+        else:
+            # Retomada: o `probe` ja rodou antes e seus dados estao em `meta`.
+            # Refaze-lo custaria uma ida a rede para reescrever o que ja se sabe.
+            info = dict(episode.get("meta") or {})
+            log.info("[ep %s] retomando: video ja baixado", episode_id)
         _set(episode_id, "downloading", 0.15, paths=paths)
+        _checkpoint(episode_id, paths)
 
-        audio_path = ingest.extract_audio(video_path)
-        paths["audio"] = str(audio_path)
+        audio_path = _reaproveitar(paths, "audio")
+        if audio_path is None:
+            audio_path = ingest.extract_audio(video_path)
+            paths["audio"] = str(audio_path)
 
         # ------------------------------------------------------ 2. transcricao
         _set(episode_id, "transcribing", 0.18, paths=paths)
-        result = transcribe.transcribe(audio_path)
-        segments = result["segments"]
-        if not segments:
-            raise RuntimeError("transcricao vazia — o video tem fala audivel?")
-
-        transcript_path = work_dir / "transcript.json"
-        transcript_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        paths["transcript"] = str(transcript_path)
-        db.update_episode(episode_id, lang_src=result["language"], paths=paths)
+        transcript_path = _reaproveitar(paths, "transcript")
+        if transcript_path is None:
+            result = transcribe.transcribe(audio_path)
+            segments = result["segments"]
+            if not segments:
+                raise RuntimeError("transcricao vazia — o video tem fala audivel?")
+            transcript_path = work_dir / "transcript.json"
+            transcript_path.write_text(
+                json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
+            paths["transcript"] = str(transcript_path)
+            db.update_episode(episode_id, lang_src=result["language"], paths=paths)
+        else:
+            # A etapa mais cara do pipeline (horas de GPU). Nunca refazer de graca.
+            result = json.loads(transcript_path.read_text(encoding="utf-8"))
+            segments = result["segments"]
+            log.info("[ep %s] retomando: transcricao aproveitada (%d segmentos)",
+                     episode_id, len(segments))
         _set(episode_id, "transcribing", 0.45)
+        _checkpoint(episode_id, paths)
 
         # -------------------------------------------------------- 3. traducao
         _set(episode_id, "translating", 0.46)
         meta = {
-            "title": info["title"],
-            "channel": info["channel"],
+            "title": info.get("title"),
+            "channel": info.get("channel"),
             "lang_src": result["language"],
             "lang_dst": episode.get("lang_dst") or settings.target_lang,
         }
-        glossary = _glossary_for(info["channel"])
+        glossary = _glossary_for(info.get("channel"))
 
-        if settings.use_batch_api:
-            translated = translate.translate_segments_batch(segments, meta, glossary)
-        else:
-            translated = translate.translate_segments(
-                segments,
-                meta,
-                glossary,
-                on_progress=lambda frac, label: _set(
-                    episode_id, "translating", 0.46 + frac * 0.24
-                ),
+        translated_path = _reaproveitar(paths, "translated")
+        if translated_path is None:
+            if settings.use_batch_api:
+                translated = translate.translate_segments_batch(segments, meta, glossary)
+            else:
+                translated = translate.translate_segments(
+                    segments,
+                    meta,
+                    glossary,
+                    on_progress=lambda frac, label: _set(
+                        episode_id, "translating", 0.46 + frac * 0.24
+                    ),
+                )
+            translated_path = work_dir / "translated.json"
+            translated_path.write_text(
+                json.dumps(translated, ensure_ascii=False, indent=1), encoding="utf-8"
             )
-
-        translated_path = work_dir / "translated.json"
-        translated_path.write_text(
-            json.dumps(translated, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
-        paths["translated"] = str(translated_path)
+            paths["translated"] = str(translated_path)
+        else:
+            # Traducao ja paga em creditos de IA: refazer gastaria dinheiro de novo.
+            translated = json.loads(translated_path.read_text(encoding="utf-8"))
+            log.info("[ep %s] retomando: traducao aproveitada (%d segmentos)",
+                     episode_id, len(translated))
+        _checkpoint(episode_id, paths)
 
         # Segmentos que voltaram sem traducao ficam com o texto original. Registrar
         # a contagem deixa isso visivel no painel em vez de virar surpresa na tela.
@@ -177,7 +234,7 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         paths["srt"] = str(srt_path)
         paths["ass"] = str(ass_path)
 
-        if settings.burn_full_episode:
+        if settings.burn_full_episode and _reaproveitar(paths, "episode_burned") is None:
             # A queima dentro do fluxo ocupa a faixa 72%-78% da barra do episodio.
             burned = subtitles.burn(
                 video_path, ass_path, work_dir / "episodio_legendado.mp4",
@@ -186,11 +243,22 @@ def process_episode(episode_id: int) -> dict[str, Any]:
             )
             paths["episode_burned"] = str(burned)
         _set(episode_id, "subtitling", 0.78, paths=paths)
+        _checkpoint(episode_id, paths)
 
         # ---------------------------------------------------------- 5. cortes
         _set(episode_id, "clipping", 0.80)
-        selected = clips.select_clips(translated, meta)
-        clip_ids = db.replace_clips(episode_id, selected)
+        # `replace_clips` APAGA os cortes do episodio, e com eles as publicacoes ja
+        # agendadas. Numa retomada isso desfaria o que a execucao anterior produziu
+        # (e uma rodada de IA paga), entao a selecao so acontece se ainda nao houver
+        # corte nenhum.
+        existentes = db.list_clips(episode_id)
+        if existentes:
+            selected = [dict(c) for c in existentes]
+            clip_ids = [c["id"] for c in existentes]
+            log.info("[ep %s] retomando: %d cortes ja selecionados", episode_id, len(clip_ids))
+        else:
+            selected = clips.select_clips(translated, meta)
+            clip_ids = db.replace_clips(episode_id, selected)
 
         clip_dir = work_dir / "clips"
         clip_dir.mkdir(exist_ok=True)
@@ -198,15 +266,22 @@ def process_episode(episode_id: int) -> dict[str, Any]:
             # O id do episodio entra no nome do arquivo: sem isso todos os episodios
             # tem "corte_01.mp4" e a rota /media, que resolve por nome, serve o corte
             # de outro episodio.
-            try:
-                _render_variants(
-                    episode_id, clip_id, clip, video_path, translated, clip_dir, i + 1,
-                    work_dir, card=bool(episode.get("card_layout")),
-                )
-            except RuntimeError as exc:
-                log.error("[ep %s] corte %d falhou: %s", episode_id, i + 1, exc)
-                db.update_clip(clip_id, status="failed")
+            pronto = clip.get("path")
+            if pronto and Path(pronto).exists():
+                log.info("[ep %s] corte %d ja renderizado", episode_id, i + 1)
+            else:
+                try:
+                    _render_variants(
+                        episode_id, clip_id, clip, video_path, translated, clip_dir, i + 1,
+                        work_dir, card=bool(episode.get("card_layout")),
+                    )
+                except RuntimeError as exc:
+                    log.error("[ep %s] corte %d falhou: %s", episode_id, i + 1, exc)
+                    db.update_clip(clip_id, status="failed")
             _set(episode_id, "clipping", 0.80 + (i + 1) / max(len(selected), 1) * 0.12)
+            # Ponto de pausa por corte: renderizar 60 cortes leva horas, e esperar o
+            # fim da etapa inteira faria a pausa parecer que nao funcionou.
+            _checkpoint(episode_id, paths)
 
         # --------------------------------------------------------- 6. arquivo
         _set(episode_id, "archiving", 0.94)
@@ -236,9 +311,17 @@ def process_episode(episode_id: int) -> dict[str, Any]:
         _set(episode_id, "done", 1.0, paths=paths, error=None)
         return db.get_episode(episode_id)
 
+    except Paused:
+        # Pausa nao e falha. O status e os caminhos ja foram gravados no
+        # checkpoint; marcar 'failed' aqui apagaria a distincao entre "voce
+        # mandou parar" e "quebrou", que e justamente o que a UI mostra.
+        raise
+
     except Exception as exc:  # noqa: BLE001 — o worker precisa registrar qualquer falha
         detail = f"{type(exc).__name__}: {exc}"
         log.error("[ep %s] falhou: %s\n%s", episode_id, detail, traceback.format_exc())
+        # `paths` preserva os artefatos ja produzidos: retomar um episodio
+        # que falhou tarde nao refaz download nem transcricao.
         db.update_episode(episode_id, status="failed", error=detail, paths=paths)
         raise
 

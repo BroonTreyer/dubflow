@@ -28,24 +28,65 @@
     origem {{ episode.lang_src or '?' }} &rarr; {{ episode.lang_dst }}
   </p>
   <div class="row" style="margin:14px 0">
-    <span class="tag {% if episode.status == 'done' %}done{% elif episode.status == 'failed' %}failed{% else %}run{% endif %}">
+    <span class="tag {% if episode.status == 'done' %}done{% elif episode.status == 'failed' %}failed{% elif episode.status == 'paused' %}paused{% else %}run{% endif %}">
       {{ episode.status }}
     </span>
     <div class="bar" style="flex:1"><i style="width: {{ (episode.progress * 100) | round(0) }}%"></i></div>
   </div>
 
-  {% if episode.error %}
+  {% if episode.status == 'paused' %}
+  <div class="note">
+    <strong>Pausado.</strong> O que já foi feito está guardado em disco —
+    retomar continua do mesmo ponto, sem refazer download, transcrição nem tradução.
+  </div>
+  <div class="row" style="margin-top:12px">
+    <form method="post" action="/episodes/{{ episode.id }}/resume">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit">Retomar</button>
+    </form>
+    <form method="post" action="/episodes/{{ episode.id }}/retry"
+          onsubmit="return confirm('Refazer do zero? Descarta download, transcrição e tradução já prontos — a transcrição custa horas de GPU e a tradução custa créditos de IA.')">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="scratch" value="1">
+      <button type="submit" class="ghost">Refazer do zero</button>
+    </form>
+  </div>
+  {% elif episode.pause_requested %}
+  <div class="note">
+    <strong>Pausa pedida.</strong> O episódio para assim que a etapa atual
+    terminar de gravar o que está produzindo.
+  </div>
+  {% elif episode.error %}
   <div class="note" style="border-color:var(--err);background:#1d1315">
     <strong>Falhou:</strong> {{ episode.error }}
   </div>
-  <form method="post" action="/episodes/{{ episode.id }}/retry" style="margin-top:12px">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button type="submit" class="ghost">Reprocessar</button>
-  </form>
+  <div class="row" style="margin-top:12px">
+    <form method="post" action="/episodes/{{ episode.id }}/retry">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button type="submit" class="ghost">Reprocessar</button>
+    </form>
+    <form method="post" action="/episodes/{{ episode.id }}/retry"
+          onsubmit="return confirm('Refazer do zero? Descarta download, transcrição e tradução já prontos.')">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="scratch" value="1">
+      <button type="submit" class="ghost">Refazer do zero</button>
+    </form>
+  </div>
+  <p class="muted" style="font-size:12px;margin-top:6px">
+    Reprocessar retoma do ponto em que parou. Refazer do zero descarta os artefatos.
+  </p>
   {% elif episode.status == 'done' %}
   <form method="post" action="/episodes/{{ episode.id }}/retry" style="margin-top:12px">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <button type="submit" class="ghost">Reprocessar</button>
+  </form>
+  {% else %}
+  <form method="post" action="/episodes/{{ episode.id }}/pause" style="margin-top:12px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button type="submit" class="ghost">Pausar</button>
+    <span class="muted" style="font-size:12px;margin-left:8px">
+      para no fim da etapa atual, guardando o progresso
+    </span>
   </form>
   {% endif %}
 

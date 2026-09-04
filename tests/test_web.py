@@ -991,6 +991,59 @@ def main() -> int:
     check("botao do lote some quando nao ha falha",
           "retry-failed" not in client.get("/").text)
 
+    print("pausar e retomar do mesmo ponto")
+    # Pausa cooperativa: quem esta rodando so recebe o PEDIDO (a etapa em curso
+    # precisa terminar de gravar), enquanto quem ainda esta na fila para na hora.
+    ep_p = db.create_episode("https://youtu.be/pausa", "owned")
+    db.update_episode(ep_p, status="transcribing", progress=0.3)
+    r_semtok = client.post(f"/episodes/{ep_p}/pause", data={"csrf": "errado"},
+                           follow_redirects=False)
+    check("sem csrf valido nao pausa", r_semtok.status_code >= 400, r_semtok.status_code)
+
+    client.post(f"/episodes/{ep_p}/pause", data={"csrf": tok}, follow_redirects=False)
+    ep = db.get_episode(ep_p)
+    check("rodando: pausa vira pedido, nao para na hora",
+          ep["status"] == "transcribing" and ep["pause_requested"] == 1,
+          (ep["status"], ep["pause_requested"]))
+    check("o runner enxerga o pedido", db.pause_requested(ep_p) is True)
+
+    ep_q = db.create_episode("https://youtu.be/pausa-fila", "owned")
+    client.post(f"/episodes/{ep_q}/pause", data={"csrf": tok}, follow_redirects=False)
+    check("na fila: pausa na hora, sem comecar",
+          db.get_episode(ep_q)["status"] == "paused", db.get_episode(ep_q)["status"])
+
+    # Retomar preserva os artefatos: e a diferenca entre continuar e recomecar.
+    db.update_episode(ep_p, status="paused", pause_requested=0,
+                      paths={"source_video": "/x/v.mp4", "transcript": "/x/t.json"})
+    client.post(f"/episodes/{ep_p}/resume", data={"csrf": tok}, follow_redirects=False)
+    ep = db.get_episode(ep_p)
+    check("retomar devolve para a fila", ep["status"] == "queued", ep["status"])
+    check("retomar preserva os artefatos", ep["paths"].get("transcript") == "/x/t.json",
+          ep["paths"])
+    check("retomar limpa o pedido de pausa", ep["pause_requested"] == 0)
+
+    # Reprocessar tambem retoma; so 'refazer do zero' descarta.
+    db.update_episode(ep_p, status="failed", error="quebrou",
+                      paths={"transcript": "/x/t.json"})
+    client.post(f"/episodes/{ep_p}/retry", data={"csrf": tok}, follow_redirects=False)
+    check("reprocessar preserva os artefatos",
+          db.get_episode(ep_p)["paths"].get("transcript") == "/x/t.json",
+          db.get_episode(ep_p)["paths"])
+
+    db.update_episode(ep_p, status="failed", paths={"transcript": "/x/t.json"})
+    client.post(f"/episodes/{ep_p}/retry", data={"csrf": tok, "scratch": "1"},
+                follow_redirects=False)
+    check("refazer do zero descarta os artefatos",
+          not db.get_episode(ep_p)["paths"], db.get_episode(ep_p)["paths"])
+
+    # Um reinicio do worker nao pode ressuscitar o que foi pausado de proposito.
+    db.update_episode(ep_p, status="paused")
+    db.update_episode(ep_q, status="clipping")
+    devolvidos = db.recover_stuck_episodes()
+    check("reinicio devolve quem estava rodando", ep_q in devolvidos, devolvidos)
+    check("reinicio NAO ressuscita o pausado", ep_p not in devolvidos, devolvidos)
+    check("pausado continua pausado", db.get_episode(ep_p)["status"] == "paused")
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")

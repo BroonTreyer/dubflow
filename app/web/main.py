@@ -557,7 +557,7 @@ def set_segment(request: Request, episode_id: int,
 
 # Estados em que reprocessar e seguro. Reenfileirar um episodio em andamento
 # colocaria dois workers no mesmo job, disputando GPU e escrevendo os mesmos arquivos.
-RETRYABLE = {"failed", "done", "canceled"}
+RETRYABLE = {"failed", "done", "canceled", "paused"}
 
 
 @app.post("/episodes/retry-failed", dependencies=panel)
@@ -574,8 +574,51 @@ def retry_failed_episodes(request: Request, csrf: str = Form("")):
     return RedirectResponse(f"/?refeitos={len(ids)}", status_code=303)
 
 
+@app.post("/episodes/{episode_id}/pause", dependencies=panel)
+def pause_episode(request: Request, episode_id: int, csrf: str = Form("")):
+    """Pede que o episodio pare no proximo ponto seguro.
+
+    Nao interrompe a etapa em curso: ela termina e grava seu artefato. Uma
+    transcricao de duas horas so para quando acaba de transcrever — parar no meio
+    perderia exatamente o trabalho que a pausa existe para preservar. Ja no render
+    dos cortes a parada e por corte, entao vem rapido.
+    """
+    security.require_csrf(request, csrf)
+    episode = db.get_episode(episode_id)
+    if episode is None:
+        raise HTTPException(404, "episodio nao encontrado")
+    if episode["status"] in db.TERMINAL:
+        raise HTTPException(409, f"episodio esta em '{episode['status']}'; nao ha o que pausar.")
+    db.request_pause(episode_id)
+    return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
+
+
+@app.post("/episodes/{episode_id}/resume", dependencies=panel)
+def resume_episode(request: Request, episode_id: int, csrf: str = Form("")):
+    """Retoma do ponto em que parou, reaproveitando os artefatos em disco."""
+    security.require_csrf(request, csrf)
+    episode = db.get_episode(episode_id)
+    if episode is None:
+        raise HTTPException(404, "episodio nao encontrado")
+    if episode["status"] not in ("paused", "failed"):
+        raise HTTPException(409, f"episodio esta em '{episode['status']}'; nada a retomar.")
+    db.resume_episode(episode_id)
+    return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
+
+
 @app.post("/episodes/{episode_id}/retry", dependencies=panel)
-def retry_episode(request: Request, episode_id: int, csrf: str = Form("")):
+def retry_episode(request: Request, episode_id: int, csrf: str = Form(""),
+                  scratch: str = Form("")):
+    """Devolve o episodio para a fila.
+
+    Por padrao **retoma**: o runner reaproveita download, transcricao e traducao
+    que ja existirem em disco, entao um episodio que quebrou na distribuicao nao
+    paga de novo horas de GPU e creditos de IA.
+
+    Com `scratch`, esquece os artefatos e refaz tudo. E a saida para o caso em que
+    o proprio artefato esta ruim (transcricao truncada, video baixado pela metade):
+    sem isso, retomar reusaria o arquivo defeituoso para sempre.
+    """
     security.require_csrf(request, csrf)
     episode = db.get_episode(episode_id)
     if episode is None:
@@ -586,7 +629,9 @@ def retry_episode(request: Request, episode_id: int, csrf: str = Form("")):
             f"episodio esta em '{episode['status']}'. Espere terminar ou falhar "
             "antes de reprocessar.",
         )
-    db.update_episode(episode_id, status="queued", progress=0, error=None)
+    extra = {"paths": {}} if scratch else {}
+    db.update_episode(episode_id, status="queued", progress=0, error=None,
+                      pause_requested=0, **extra)
     return RedirectResponse(f"/episodes/{episode_id}", status_code=303)
 
 

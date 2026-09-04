@@ -24,7 +24,16 @@ STATES = [
     "clipping",
     "archiving",
     "done",
+    # 'paused' NAO e estado de execucao: o episodio parou num ponto conhecido e
+    # so volta a andar se alguem pedir. Fica fora de `recover_stuck_episodes`
+    # (senao o proximo reinicio do worker o devolveria para a fila sozinho) e
+    # fora de `claim_next_queued`, que so pega 'queued'.
+    "paused",
 ]
+
+# Estados em que o worker esta de fato trabalhando o episodio. E o que
+# `recover_stuck_episodes` devolve para a fila apos um reinicio.
+RUNNING_STATES = tuple(s for s in STATES if s not in ("queued", "done", "paused"))
 
 LICENSE_STATES = ("unknown", "licensed", "owned", "public_domain")
 
@@ -32,6 +41,7 @@ LICENSE_STATES = ("unknown", "licensed", "owned", "public_domain")
 # nome da coluna (bind parameters so valem para valores), entao a allowlist e o
 # que impede uma chave inesperada de virar SQL.
 EPISODE_COLUMNS = {
+    "pause_requested",
     "source_url", "video_id", "title", "channel", "duration", "lang_src", "lang_dst",
     "segment", "license_status", "status", "progress", "error", "paths", "meta",
     "updated_at", "pending_action", "started_at", "vip_publish", "vip_posted_at",
@@ -195,7 +205,7 @@ def now() -> str:
 
 
 # Estados em que nao ha mais nada a esperar.
-TERMINAL = ("done", "failed", "canceled")
+TERMINAL = ("done", "failed", "canceled", "paused")
 
 
 def eta_seconds(episode: dict[str, Any]) -> int | None:
@@ -270,6 +280,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE episodes ADD COLUMN vip_publish INTEGER NOT NULL DEFAULT 1")
         if "vip_posted_at" not in ep_columns:
             conn.execute("ALTER TABLE episodes ADD COLUMN vip_posted_at TEXT")
+        # Pausa cooperativa: o painel liga a flag, o runner a le entre as etapas
+        # e para no proximo ponto seguro. Nao da para matar o processo no meio de
+        # uma etapa sem perder o que ela estava produzindo.
+        if "pause_requested" not in ep_columns:
+            conn.execute(
+                "ALTER TABLE episodes ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0"
+            )
 
         # Multi-conta: cadencia de gotejamento por canal (bancos que ja tinham a
         # tabela channels sem a coluna).
@@ -349,6 +366,49 @@ def claim_next_action() -> tuple[dict[str, Any], str] | None:
     return _episode_row(row), row["pending_action"]
 
 
+def request_pause(episode_id: int) -> None:
+    """Pede que o episodio pare no proximo ponto seguro.
+
+    Nao interrompe nada na hora: a etapa em curso termina e grava o artefato
+    dela. E de proposito — matar o processo no meio de uma transcricao de duas
+    horas perderia as duas horas, e e justamente isso que a pausa existe para
+    evitar. Um episodio ainda em 'queued' pausa na hora, sem nunca comecar.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"episodio {episode_id} nao existe")
+        if row["status"] == "queued":
+            conn.execute(
+                "UPDATE episodes SET status = 'paused', pause_requested = 0,"
+                " updated_at = ? WHERE id = ?", (now(), episode_id))
+        else:
+            conn.execute(
+                "UPDATE episodes SET pause_requested = 1, updated_at = ? WHERE id = ?",
+                (now(), episode_id))
+
+
+def pause_requested(episode_id: int) -> bool:
+    """True se pediram pausa. Lido do banco a cada checagem, de proposito: o
+    runner roda no worker e o pedido vem do painel, que e outro processo."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT pause_requested FROM episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+    return bool(row and row["pause_requested"])
+
+
+def resume_episode(episode_id: int) -> None:
+    """Devolve o episodio para a fila. O runner retoma pelos artefatos em disco."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE episodes SET status = 'queued', pause_requested = 0, error = NULL,"
+            " updated_at = ? WHERE id = ? AND status IN ('paused', 'failed')",
+            (now(), episode_id))
+
+
 def recover_stuck_episodes() -> list[int]:
     """Devolve a fila os episodios que ficaram parados num estado de execucao.
 
@@ -361,7 +421,7 @@ def recover_stuck_episodes() -> list[int]:
     Se um dia forem varios workers, isto precisa virar lease com heartbeat: um
     worker novo nao poderia mais assumir que os outros estao parados.
     """
-    in_flight = [s for s in STATES if s not in ("queued", "done")]
+    in_flight = list(RUNNING_STATES)
     placeholders = ", ".join("?" for _ in in_flight)
     with connect() as conn:
         rows = conn.execute(

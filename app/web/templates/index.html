@@ -72,7 +72,10 @@
       <td class="muted">{{ ep.channel or '—' }}</td>
       <td>
         <span class="tag {% if ep.status == 'done' %}done{% elif ep.status == 'failed' %}failed
+              {% elif ep.status == 'paused' %}paused
               {% elif ep.status != 'queued' %}run{% endif %}">{{ ep.status }}</span>
+        {% if ep.pause_requested %}<span class="muted" style="font-size:11px"
+              title="para no fim da etapa atual">pausando…</span>{% endif %}
       </td>
       <td style="min-width:190px">
         <div class="bar"><i style="width: {{ (ep.progress * 100) | round(0) }}%"></i></div>
@@ -84,11 +87,24 @@
       <td>
         {# Episodio em execucao nao pode ser apagado: o worker esta escrevendo
            nos arquivos. A rota tambem recusa, isto so esconde o botao. #}
-        {% if ep.status in ('failed', 'done', 'canceled') %}
-        <form method="post" action="/episodes/{{ ep.id }}/retry" style="display:inline-block"
-              onsubmit="return confirm('Reprocessar o episodio {{ ep.id }} do zero?')">
+        {% if ep.status == 'paused' %}
+        <form method="post" action="/episodes/{{ ep.id }}/resume" style="display:inline-block">
           <input type="hidden" name="csrf" value="{{ csrf }}">
-          <button type="submit" class="ghost" title="devolve este episodio para a fila"
+          <button type="submit" title="continua do ponto em que parou"
+                  style="padding:2px 8px;font-size:12px">retomar</button>
+        </form>
+        {% elif ep.status not in ('failed', 'done', 'canceled') and not ep.pause_requested %}
+        <form method="post" action="/episodes/{{ ep.id }}/pause" style="display:inline-block">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="ghost" title="para no fim da etapa atual, guardando o progresso"
+                  style="padding:2px 8px;font-size:12px">pausar</button>
+        </form>
+        {% endif %}
+        {% if ep.status in ('failed', 'done', 'canceled', 'paused') %}
+        <form method="post" action="/episodes/{{ ep.id }}/retry" style="display:inline-block"
+              onsubmit="return confirm('Reprocessar o episodio {{ ep.id }}? Retoma do ponto em que parou.')">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" class="ghost" title="devolve este episodio para a fila, retomando de onde parou"
                   style="padding:2px 8px;font-size:12px">reprocessar</button>
         </form>
         <form method="post" action="/episodes/{{ ep.id }}/delete" style="display:inline-block"
