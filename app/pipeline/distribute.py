@@ -243,6 +243,16 @@ def distribute_episode(episode_id: int,
 
     # Override manual do segmento vence a classificacao.
     segment = (episode.get("segment") or "").strip() or None
+    if not segment and len(niches) == 1:
+        # Nicho unico: nao ha o que decidir, e perguntar cria um jeito de falhar.
+        # `classify_segment` devolve None quando o episodio nao casa com nenhum
+        # rotulo — de proposito, para nao alucinar. Com uma opcao so, isso vira
+        # uma recusa que ninguem ve: o episodio fica `done` com zero posts e a
+        # distribuicao e best-effort, entao nem reprova. Foi o que prendeu os
+        # episodios 11, 13, 14 e 15 (mais de 200 cortes) em 03-04/09/2026.
+        segment = niches[0]
+        db.update_episode(episode_id, segment=segment)
+        log.info("[ep %s] nicho unico ('%s'): classificacao dispensada", episode_id, segment)
     if not segment:
         classify = classifier or classify_segment
         segment = classify(episode, niches)

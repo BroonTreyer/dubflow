@@ -1044,6 +1044,48 @@ def main() -> int:
     check("reinicio NAO ressuscita o pausado", ep_p not in devolvidos, devolvidos)
     check("pausado continua pausado", db.get_episode(ep_p)["status"] == "paused")
 
+    print("nicho unico dispensa a classificacao")
+    # Com um nicho so entre os canais ativos nao ha o que decidir, e perguntar
+    # cria um jeito de falhar: `classify_segment` devolve None quando o episodio
+    # nao casa, o episodio fica `done` com zero posts e a distribuicao, sendo
+    # best-effort, nem reprova. Prendeu 4 episodios e 200+ cortes em 03-04/09.
+    from app.pipeline import distribute  # noqa: PLC0415
+
+    # Os blocos anteriores deixaram canais de outros nichos ativos. Sem pausa-los,
+    # nao existe "nicho unico" para testar.
+    anteriores = [c["id"] for c in db.list_channels(only_active=True)]
+    for cid in anteriores:
+        db.update_channel(cid, status="paused")
+    canal = db.create_channel(name="Unico", platform="youtube", market="BR",
+                              niche="Poder e Sociedade", posts_per_day=5)
+    ep_uni = db.create_episode("https://youtu.be/nicho-unico", "owned")
+    db.update_episode(ep_uni, status="done", lang_dst="pt-BR")
+    db.replace_clips(ep_uni, [{"idx": 1, "start": 0, "end": 30, "title": "t", "hook": "h",
+                               "caption": "c", "score": 9}])
+    for corte in db.list_clips(ep_uni):
+        db.update_clip(corte["id"], status="ready", path=str(_tmp / "corte.mp4"))
+
+    def recusa_sempre(episode, niches):
+        raise AssertionError("com um nicho so, a classificacao nao deveria ser chamada")
+
+    resumo = distribute.distribute_episode(ep_uni, classifier=recusa_sempre)
+    check("nicho unico agenda sem classificar", resumo["status"] == "ok", resumo)
+    check("o segmento fica gravado no episodio",
+          db.get_episode(ep_uni)["segment"] == "Poder e Sociedade",
+          db.get_episode(ep_uni)["segment"])
+    check("o corte virou publicacao", len(db.list_posts(ep_uni)) == 1, db.list_posts(ep_uni))
+
+    # Com dois nichos a decisao volta a existir, e a recusa e respeitada.
+    db.create_channel(name="Outro", platform="youtube", market="BR",
+                      niche="Ciencia e Universo", posts_per_day=5)
+    ep_dois = db.create_episode("https://youtu.be/dois-nichos", "owned")
+    db.update_episode(ep_dois, status="done", lang_dst="pt-BR")
+    resumo2 = distribute.distribute_episode(ep_dois, classifier=lambda e, n: None)
+    check("com mais de um nicho, a classificacao decide",
+          resumo2["status"] == "nao_classificado", resumo2)
+    for cid in anteriores:
+        db.update_channel(cid, status="active")
+
     print()
     if failures:
         print(f"{len(failures)} falha(s): {', '.join(failures)}")
