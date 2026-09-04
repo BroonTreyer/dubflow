@@ -163,9 +163,19 @@ def main() -> int:
 
     print("\n" + "=" * 60)
     if args.channel is not None:
-        credentials.save({"YOUTUBE_REFRESH_TOKEN": refresh}, args.channel)
-        print(f"Sucesso! Refresh token gravado no cofre do canal {args.channel} "
-              f"('{channel['name']}').")
+        # Grava client id/secret JUNTO com o refresh token. Um refresh token so
+        # funciona com o cliente OAuth que o emitiu, entao guardar so ele deixava
+        # o canal num estado impossivel: autorizado e incapaz de publicar, com a
+        # mensagem "Could not determine client ID from request" — que nao aponta
+        # para a causa. Pior quando o cofre global tinha um client id qualquer:
+        # como sao SHARED_KEYS, o canal herdava o cliente ERRADO em silencio.
+        credentials.save({
+            "YOUTUBE_REFRESH_TOKEN": refresh,
+            "YOUTUBE_CLIENT_ID": client_id,
+            "YOUTUBE_CLIENT_SECRET": client_secret,
+        }, args.channel)
+        print(f"Sucesso! Refresh token e credencial do cliente gravados no cofre "
+              f"do canal {args.channel} ('{channel['name']}').")
         print("Nada a colar — o publisher do YouTube ja pode postar por este canal.")
     else:
         print("Sucesso! Cole a linha abaixo no seu .env:\n")
