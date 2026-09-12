@@ -25,9 +25,16 @@ YTDLP = [sys.executable, "-m", "yt_dlp"]
 # extrair do YouTube ("No supported JavaScript runtime could be found"), e sem
 # ele o download falha — foi o que reprovou o ep 8.
 _DENO_CANDIDATOS = (
+    # Windows
     r"%LOCALAPPDATA%\Microsoft\WinGet\Packages\DenoLand.Deno_*\deno.exe",
     r"%USERPROFILE%\.deno\bin\deno.exe",
     r"%LOCALAPPDATA%\Programs\deno\deno.exe",
+    # Linux / macOS. O instalador do deno escreve o PATH no ~/.bashrc, que o
+    # systemd nao le: sem estes caminhos o servico nao acha o binario que existe.
+    "$HOME/.deno/bin/deno",
+    "/usr/local/bin/deno",
+    "/usr/bin/deno",
+    "/opt/deno/bin/deno",
 )
 
 

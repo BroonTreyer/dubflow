@@ -1,0 +1,29 @@
+[Unit]
+Description=dubflow — worker (transcricao na GPU, render e publicacao)
+After=network-online.target dubflow-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dubflow
+WorkingDirectory=/opt/dubflow
+Environment=PYTHONPATH=/opt/dubflow
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/dubflow/.env
+
+# A guarda roda ANTES do worker e pode recusar a subida (ver guarda-vencidas.sh).
+# Sem "-" no inicio da linha, a falha dela impede o ExecStart — que e o ponto.
+ExecStartPre=/opt/dubflow/deploy/guarda-vencidas.sh
+ExecStart=/opt/dubflow/.venv/bin/python -m worker
+
+# Um worker so. Dois na mesma fila disputam o mesmo episodio, e um worker novo
+# devolve para a fila todo episodio em estado nao-terminal.
+Restart=on-failure
+RestartSec=30
+
+# A transcricao carrega o large-v3 na GPU; matar no meio corrompe o episodio em
+# andamento, entao vale esperar ele terminar o passo atual.
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

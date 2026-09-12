@@ -4,6 +4,8 @@ data/.secret_key
 
 # Dados e artefatos de processamento
 data/
+# Pacotes de publicacao para o servidor: contem os cortes renderizados.
+pacotes/
 tests/_tmp/
 
 # Python

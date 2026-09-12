@@ -1,0 +1,28 @@
+# Dependencias do SERVIDOR — a metade que so publica.
+#
+# O requirements.txt completo e do PC, que transcreve e renderiza. Aqui nao ha
+# GPU nem pipeline de processamento: o servidor recebe pacotes prontos
+# (scripts/importar_pacote.py) e sobe para o YouTube no horario.
+#
+# O que fica de fora, e por que:
+#   nvidia-cublas-cu12 / nvidia-cudnn-cu12  DLLs CUDA para o ctranslate2 no
+#                                           Windows. Sem GPU aqui, sao ~2 GB
+#                                           baixados para nada.
+#
+# faster-whisper e opencv CONTINUAM na lista: o worker importa
+# app.pipeline.runner no topo, que puxa a cadeia inteira de transcricao e corte.
+# Tirar exigiria import preguicoso — mexida maior, que nao vale so para economizar
+# disco num servidor que tem 150 GB.
+
+anthropic>=0.69
+faster-whisper>=1.2
+yt-dlp>=2026.1
+fastapi>=0.115
+uvicorn[standard]>=0.34
+jinja2>=3.1
+python-dotenv>=1.0
+python-multipart>=0.0.20
+requests>=2.32
+Pillow>=10.0
+opencv-python-headless>=4.10,<5
+openai>=2.0

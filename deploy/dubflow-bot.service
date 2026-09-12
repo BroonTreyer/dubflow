@@ -1,0 +1,21 @@
+[Unit]
+Description=dubflow — bot de vendas do Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dubflow
+WorkingDirectory=/opt/dubflow
+Environment=PYTHONPATH=/opt/dubflow
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/dubflow/.env
+ExecStart=/opt/dubflow/.venv/bin/python -m bot
+
+# Sem TELEGRAM_BOT_TOKEN o bot avisa e encerra sozinho. Sem esta linha o systemd
+# ficaria reiniciando em loop uma configuracao que so o dono pode resolver.
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

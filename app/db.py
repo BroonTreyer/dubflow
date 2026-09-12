@@ -263,6 +263,18 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE posts ADD COLUMN {col} INTEGER")
         if "stats_at" not in columns:
             conn.execute("ALTER TABLE posts ADD COLUMN stats_at TEXT")
+        # De onde este post veio, quando ele foi IMPORTADO de outra maquina.
+        #
+        # O PC processa e agenda; o servidor so publica. A chave e estavel
+        # ("<maquina>:<pacote>:<post>") e existe para a importacao ser idempotente:
+        # reenviar o mesmo pacote nao duplica publicacao. Nulo em post nascido
+        # aqui mesmo, que e o caso de toda instalacao de maquina unica.
+        if "origem" not in columns:
+            conn.execute("ALTER TABLE posts ADD COLUMN origem TEXT")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_origem"
+                " ON posts(origem) WHERE origem IS NOT NULL"
+            )
 
         ep_columns = {r["name"] for r in conn.execute("PRAGMA table_info(episodes)")}
         if "pending_action" not in ep_columns:
