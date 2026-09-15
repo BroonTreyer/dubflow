@@ -1,0 +1,12 @@
+# Fim de linha fixo por tipo, independente do core.autocrlf de cada maquina.
+#
+# O Windows daqui tem core.autocrlf=true, e o `git archive` aplica essa conversao:
+# o guarda-vencidas.sh chegou ao servidor com CRLF e o shebang virou "bash\r",
+# derrubando o dubflow-worker no ExecStartPre (15/09/2026).
+
+# Roda no Linux do servidor: sempre LF.
+*.sh      text eol=lf
+*.service text eol=lf
+
+# PowerShell 5.1 do Windows: ASCII com CRLF (ver README dos atalhos).
+*.ps1     text eol=crlf
