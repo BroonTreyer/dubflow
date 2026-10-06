@@ -182,10 +182,7 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
                "pagina": p.get("name", ""), "token": p["access_token"]}
               for p in paginas if p.get("instagram_business_account")]
     if not contas:
-        raise ErroInstagram(
-            f"O token ve {len(paginas)} Pagina(s), mas nenhuma tem conta do Instagram "
-            "Profissional ligada. Ligue o Instagram a Pagina (Configuracoes da Pagina > "
-            "Contas vinculadas) e confira as permissoes do token.", fatal=True)
+        raise ErroInstagram(_diagnostico(token_usuario, paginas), fatal=True)
     with _trava:
         c = config()
         por_id = {x["ig_id"]: x for x in c["contas"]}
@@ -195,6 +192,32 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
         _gravar(_arq_config(), c)
     log.info("instagram conectado: %s", ", ".join("@" + x["username"] for x in contas))
     return config_publica()
+
+
+PERMISSOES = ("instagram_basic", "instagram_content_publish", "pages_show_list",
+              "pages_read_engagement", "business_management")
+
+
+def _diagnostico(token_usuario: str, paginas: list[dict]) -> str:
+    """Por que nenhuma conta apareceu: aponta a causa em vez de listar as quatro."""
+    nomes = ", ".join(f'"{p.get("name", "?")}"' for p in paginas) or "nenhuma"
+    try:
+        concedidas = {x["permission"] for x in _json(requests.get(
+            f"{GRAPH}/me/permissions", params={"access_token": token_usuario}, timeout=30)
+        ).get("data", []) if x.get("status") == "granted"}
+        faltando = [p for p in PERMISSOES if p not in concedidas]
+    except ErroInstagram:
+        faltando = None
+    if not paginas:
+        return ("O token nao ve nenhuma Pagina do Facebook. Gere de novo marcando a Pagina "
+                "na janela de autorizacao (permissao pages_show_list).")
+    if faltando:
+        return (f"Paginas vistas: {nomes}. Faltam permissoes no token: {', '.join(faltando)}. "
+                "Adicione no Graph API Explorer ANTES de gerar o token e gere de novo.")
+    return (f"Paginas vistas: {nomes}, mas nenhuma devolveu conta do Instagram. Permissoes OK, "
+            "entao e uma destas: (1) na janela de autorizacao a conta do Instagram nao foi "
+            "marcada - gere o token de novo e marque a Pagina E o Instagram; (2) o Instagram "
+            "nao e conta Profissional; (3) o Instagram esta ligado a outra Pagina.")
 
 
 def desconectar(ig_id: str) -> dict:

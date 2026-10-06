@@ -193,7 +193,22 @@ def test_nao_apaga_video_com_post_agendado(meta):
     assert r.status_code == 409 and (mf.ENTRADA / "a.mp4").exists()
 
 
-def test_conectar_sem_instagram_explica(meta, monkeypatch):
-    monkeypatch.setattr(ig.requests, "get", lambda url, **k: Resp({"data": [{"name": "P"}]}))
-    with pytest.raises(ig.ErroInstagram, match="nenhuma tem conta do Instagram"):
+def _so_paginas_sem_ig(permissoes):
+    def get(url, **k):
+        if url.endswith("/me/permissions"):
+            return Resp({"data": [{"permission": p, "status": "granted"} for p in permissoes]})
+        return Resp({"data": [{"name": "Achadinhos da Isa"}]})
+    return get
+
+
+def test_conectar_sem_instagram_aponta_permissao_faltando(meta, monkeypatch):
+    monkeypatch.setattr(ig.requests, "get", _so_paginas_sem_ig(["pages_show_list"]))
+    with pytest.raises(ig.ErroInstagram, match="Faltam permissoes.*instagram_basic") as e:
+        ig.conectar("T")
+    assert "Achadinhos da Isa" in str(e.value)
+
+
+def test_conectar_sem_instagram_com_permissoes_ok(meta, monkeypatch):
+    monkeypatch.setattr(ig.requests, "get", _so_paginas_sem_ig(list(ig.PERMISSOES)))
+    with pytest.raises(ig.ErroInstagram, match="nao foi marcada"):
         ig.conectar("T")
