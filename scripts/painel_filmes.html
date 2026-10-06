@@ -369,6 +369,7 @@
     <div class="card">
       <h2>Fila de publicação</h2>
       <div class="rodape" style="margin-top:0;margin-bottom:10px">
+        <button class="prim" id="btnIgCorrigir" hidden>🔄 Corrigir posts desatualizados</button>
         <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
         <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
         <span style="flex:1"></span>
@@ -882,11 +883,13 @@ function igDesenhar() {
   const pub = f.filter(x => x.status === "publicado").length;
   const err = f.filter(x => x.status === "erro").length;
   const velhos = f.filter(x => x.desatualizado).length;
+  $("#btnIgCorrigir").hidden = !velhos || igCorrigindo;
   $("#igResumo").textContent = `· ${pend} na fila · ${pub} publicados` + (err ? ` · ${err} com erro` : "");
   $("#igFilaMsg").innerHTML = velhos
-    ? `<b style="color:var(--acento)">⚠ ${velhos} post(s) da fila são de renders antigos (partes longas demais).</b>
-       Clique em “Tirar todos os pendentes”, depois em “Renderizar pendentes” na lista de vídeos,
-       e volte aqui em “Agendar todos os prontos”.`
+    ? (igCorrigindo ? $("#igFilaMsg").innerHTML
+       : `<b style="color:var(--acento)">⚠ ${velhos} post(s) da fila são de renders antigos (partes longas demais).</b>
+       Clique em “🔄 Corrigir posts desatualizados”: tira esses posts, renderiza os vídeos de novo
+       e agenda as partes novas, tudo de uma vez.`)
     : $("#igFilaMsg").innerHTML.startsWith("<b") ? "" : $("#igFilaMsg").innerHTML;
 
   const ordem = {publicando: 0, erro: 1, pendente: 2, publicado: 3};
@@ -1001,6 +1004,50 @@ $("#btnIgAgendarTodos").addEventListener("click", () => {
   const naFila = new Set(igEstado.fila.filter(x => ["pendente", "publicando"].includes(x.status)).map(x => x.video));
   igAgendar(videos.filter(v => v.pronto && !naFila.has(v.nome)).map(v => v.nome));
 });
+/* Corrige a fila em um clique: tira os posts desatualizados, renderiza os videos
+   deles de novo e agenda as partes novas. */
+let igCorrigindo = false;
+$("#btnIgCorrigir").addEventListener("click", async () => {
+  const velhos = igEstado.fila.filter(x => x.desatualizado);
+  const nomes = [...new Set(velhos.map(x => x.video))];
+  if (!velhos.length || !confirm(`Tirar ${velhos.length} post(s) desatualizados, renderizar ` +
+      `${nomes.length} vídeo(s) de novo e agendar as partes novas?`)) return;
+  igCorrigindo = true; $("#btnIgCorrigir").hidden = true;
+  const msg = t => $("#igFilaMsg").innerHTML = `<b>${t}</b>`;
+  try {
+    msg("1/3 Tirando os posts desatualizados…");
+    igEstado.fila = (await (await post("/api/ig/remover", {ids: velhos.map(x => x.id)})).json()).fila;
+    igDesenhar();
+
+    msg(`2/3 Renderizando ${nomes.length} vídeo(s) em partes…`);
+    if (JSON.stringify(molde) !== salvo) await salvar();
+    const r = await post("/api/renderizar", {videos: nomes, refazer: true,
+                                             simultaneos: Number($("#simultaneos").value)});
+    if (r.status === 409) throw new Error("já tem um render rodando; espere terminar e clique de novo");
+    for (;;) {
+      const s = await (await fetch("/api/status")).json();
+      if (!s.rodando) {
+        if (s.erros.length) throw new Error(`${s.erros.length} vídeo(s) falharam no render: ${s.erros[0]}`);
+        break;
+      }
+      const andamento = Object.values(s.ativos).reduce((a, p) => a + (typeof p === "number" ? p / 100 : 0), 0);
+      msg(`2/3 Renderizando: ${Math.round(100 * (s.feitos + andamento) / s.total)}%`);
+      await new Promise(ok => setTimeout(ok, 1500));
+    }
+    await carregarVideos();
+
+    msg("3/3 Agendando as partes novas…");
+    await igAgendar(nomes);
+    const d = await (await post("/api/ig/reorganizar")).json();
+    igEstado.fila = d.fila;
+    igCorrigindo = false; igDesenhar();
+    msg(`Pronto: ${nomes.length} vídeo(s) refeitos e agendados, fila reorganizada.`);
+  } catch (e) {
+    igCorrigindo = false; igDesenhar();
+    $("#igFilaMsg").innerHTML = `<b style="color:var(--acento)">⚠ ${esc(e.message)}</b>`;
+  }
+});
+
 $("#btnIgTirarTodos").addEventListener("click", async () => {
   const n = igEstado.fila.filter(x => ["pendente", "erro"].includes(x.status)).length;
   if (!n || !confirm(`Tirar ${n} post(s) pendentes/com erro da fila? Os publicados ficam.`)) return;
