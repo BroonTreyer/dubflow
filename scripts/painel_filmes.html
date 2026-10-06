@@ -1,0 +1,1056 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Molde de Filmes</title>
+<style>
+  :root {
+    --bg: #f4f4f6; --painel: #ffffff; --borda: #e2e2e8; --texto: #18181b;
+    --sutil: #71717a; --acento: #e50914; --ok: #15803d; --campo: #fafafa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0f12; --painel: #18181c; --borda: #2a2a31; --texto: #f4f4f5;
+      --sutil: #a1a1aa; --campo: #111114;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--texto);
+         font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+           border-bottom: 1px solid var(--borda); background: var(--painel); }
+  header h1 { font-size: 17px; margin: 0; }
+  header .salvo { margin-left: auto; color: var(--sutil); font-size: 13px; }
+  main { display: grid; grid-template-columns: 340px 1fr 400px; gap: 20px;
+         padding: 20px 24px; align-items: start; }
+  @media (max-width: 1150px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--painel); border: 1px solid var(--borda);
+          border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--sutil); margin: 4px 0 12px; }
+  .card h2:not(:first-child) { margin-top: 22px; }
+  label { display: block; font-size: 13px; margin: 10px 0 4px; }
+  input[type=text], select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--borda);
+    border-radius: 8px; background: var(--campo); color: var(--texto); font: inherit; }
+  textarea { min-height: 120px; resize: vertical; }
+  .linha { display: flex; gap: 10px; align-items: center; }
+  .linha > * { flex: 1; }
+  .cor { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .cor input { width: 36px; height: 28px; border: none; padding: 0; background: none; }
+  .cor span { font-size: 13px; }
+  .check { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
+  input[type=range] { width: 100%; accent-color: var(--acento); }
+  .valor { float: right; color: var(--sutil); }
+  button { font: inherit; border: 1px solid var(--borda); background: var(--painel);
+           color: var(--texto); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  button:hover { border-color: var(--sutil); }
+  button.prim { background: var(--acento); border-color: var(--acento); color: #fff;
+                font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .previa { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .celular { width: 100%; max-width: 380px; aspect-ratio: 9/16; border-radius: 28px;
+             border: 10px solid #111; background: #222; overflow: hidden;
+             box-shadow: 0 12px 40px rgba(0,0,0,.25); position: relative; }
+  .celular img { width: 100%; height: 100%; display: block; transition: opacity .15s; }
+  .celular img.carregando { opacity: .55; }
+  .previa .info { color: var(--sutil); font-size: 13px; text-align: center; }
+  .drop { border: 2px dashed var(--borda); border-radius: 10px; padding: 18px;
+          text-align: center; color: var(--sutil); cursor: pointer; margin-bottom: 12px; }
+  .drop.sobre { border-color: var(--acento); color: var(--acento); }
+  .video { border: 1px solid var(--borda); border-radius: 10px; padding: 10px;
+           margin-bottom: 10px; }
+  .video.ativo { border-color: var(--acento); }
+  .video .topo { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .video .nome { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; flex: 1; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 99px;
+         background: var(--campo); border: 1px solid var(--borda); color: var(--sutil); }
+  .tag.ok { color: var(--ok); border-color: var(--ok); }
+  .video .acoes { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .video .acoes button { padding: 4px 10px; font-size: 12px; }
+  .vazio { color: var(--sutil); text-align: center; padding: 20px 0; }
+  .barra { height: 6px; background: var(--borda); border-radius: 99px; overflow: hidden;
+           margin: 10px 0 4px; }
+  .barra div { height: 100%; width: 0; background: var(--acento); transition: width .3s; }
+  .rodape { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .corte { width: 100%; max-width: 380px; }
+  .corte .quadro { position: relative; width: 100%; border-radius: 8px; overflow: hidden;
+                   background: #000; line-height: 0; }
+  .corte .quadro img { width: 100%; display: block; }
+  .corte .area { position: absolute; outline: 2px solid var(--acento);
+                 box-shadow: 0 0 0 9999px rgba(0,0,0,.62); pointer-events: none; }
+  .corte .grade { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .corte input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid var(--borda);
+                 border-radius: 8px; background: var(--campo); color: var(--texto); font: inherit; }
+  /* ---- corte em massa ---- */
+  .massa { position: fixed; inset: 0; z-index: 50; background: var(--bg);
+           display: flex; flex-direction: column; }
+  .massa[hidden] { display: none; }
+  .massa .barra-topo { background: var(--painel); border-bottom: 1px solid var(--borda);
+           padding: 12px 20px; display: grid; gap: 10px 18px;
+           grid-template-columns: repeat(4, minmax(130px, 1fr)) auto; align-items: end; }
+  .massa .barra-topo label { margin: 0 0 2px; }
+  .massa .acoes-topo { display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+           grid-column: 1 / -1; }
+  .massa .grade-videos { flex: 1; overflow-y: auto; padding: 16px 20px;
+           display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .massa .item { background: var(--painel); border: 1px solid var(--borda); border-radius: 10px;
+           padding: 8px; font-size: 12px; }
+  .massa .item .moldura { position: relative; line-height: 0; border-radius: 6px;
+           overflow: hidden; background: #000; }
+  .massa .item img { width: 100%; display: block; }
+  .massa .item .area { position: absolute; outline: 2px solid var(--acento);
+           box-shadow: 0 0 0 9999px rgba(0,0,0,.62); pointer-events: none; }
+  .massa .item .final { aspect-ratio: 9/16; background: #222; }
+  .massa .item .rotulo { margin-top: 6px; display: flex; gap: 6px; align-items: center; }
+  .massa .item .rotulo span:first-child { overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; flex: 1; }
+  @media (max-width: 700px) {
+    .massa .barra-topo { grid-template-columns: 1fr 1fr; }
+  }
+  /* ---- instagram ---- */
+  .ig .corpo { flex: 1; overflow-y: auto; padding: 16px 20px; display: grid; gap: 16px;
+               grid-template-columns: 380px 1fr; align-items: start; }
+  @media (max-width: 1000px) { .ig .corpo { grid-template-columns: 1fr; } }
+  .ig .conta { display: flex; gap: 8px; align-items: center; padding: 8px;
+               border: 1px solid var(--borda); border-radius: 8px; margin-bottom: 6px; }
+  .ig .conta b { flex: 1; }
+  .ig input[type=password], .ig input[type=number], .ig input[type=time] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--borda); border-radius: 8px;
+    background: var(--campo); color: var(--texto); font: inherit; }
+  .ig textarea { min-height: 80px; }
+  .ig details { margin: 8px 0; font-size: 13px; }
+  .ig ol { padding-left: 18px; margin: 6px 0; font-size: 13px; color: var(--sutil); }
+  .ig table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .ig th, .ig td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--borda);
+                   vertical-align: top; }
+  .ig th { color: var(--sutil); font-weight: 600; font-size: 12px; }
+  .ig td textarea { min-height: 60px; font-size: 12px; }
+  .ig td .nome { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag.erro { color: var(--acento); border-color: var(--acento); }
+  dialog { border: none; border-radius: 14px; padding: 0; background: #000; }
+  dialog video { display: block; max-height: 88vh; }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  .lista { max-height: 62vh; overflow-y: auto; margin: 0 -4px; padding: 0 4px; }
+  .ferramentas { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+                 margin-bottom: 10px; }
+  .video .sel { width: 16px; height: 16px; accent-color: var(--acento); flex: none; }
+  .tag.rodando { color: var(--acento); border-color: var(--acento); }
+  button.perigo { color: var(--acento); border-color: var(--acento); }
+  .info { color: var(--sutil); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 Molde de Filmes</h1>
+  <span class="salvo" id="salvo">carregando…</span>
+  <button class="prim" id="btnSalvar">Salvar molde</button>
+</header>
+
+<main>
+  <!-- CONTROLES -->
+  <section class="card" id="controles">
+    <h2>Textos</h2>
+    <label>Perfil</label>
+    <input type="text" data-k="perfil">
+    <label>Subtítulo</label>
+    <input type="text" data-k="subtitulo">
+    <div class="check"><input type="checkbox" data-k="mostrar_subtitulo" id="c1"><label for="c1" style="margin:0">Mostrar subtítulo</label></div>
+    <label>Botão (CTA)</label>
+    <input type="text" data-k="cta">
+    <div class="check"><input type="checkbox" data-k="mostrar_cta" id="c2"><label for="c2" style="margin:0">Mostrar botão</label></div>
+    <div class="check"><input type="checkbox" data-k="caixa_alta" id="c3"><label for="c3" style="margin:0">Gancho em CAIXA ALTA</label></div>
+    <div class="check"><input type="checkbox" data-k="legendar_padrao" id="c4"><label for="c4" style="margin:0">Legendar por padrão (fala transcrita e traduzida pra pt-BR)</label></div>
+
+    <h2>Fonte e tamanhos</h2>
+    <label>Fonte</label>
+    <select data-k="fonte" id="fonte"></select>
+    <label>Perfil <span class="valor" data-v="tamanho_perfil"></span></label>
+    <input type="range" min="30" max="90" data-k="tamanho_perfil">
+    <label>Gancho (máximo) <span class="valor" data-v="tamanho_gancho_max"></span></label>
+    <input type="range" min="44" max="130" step="2" data-k="tamanho_gancho_max">
+    <label>Botão <span class="valor" data-v="tamanho_cta"></span></label>
+    <input type="range" min="28" max="70" data-k="tamanho_cta">
+    <label>Margem lateral do texto <span class="valor" data-v="margem"></span></label>
+    <input type="range" min="20" max="160" step="5" data-k="margem">
+    <label>Cantos arredondados do vídeo <span class="valor" data-v="cantos_video"></span></label>
+    <input type="range" min="0" max="60" step="2" data-k="cantos_video">
+
+    <h2>Cores</h2>
+    <div class="cor"><input type="color" data-k="cor_fundo"><span>Fundo</span></div>
+    <div class="cor"><input type="color" data-k="cor_texto"><span>Perfil e gancho</span></div>
+    <div class="cor"><input type="color" data-k="cor_subtitulo"><span>Subtítulo</span></div>
+    <div class="cor"><input type="color" data-k="cor_cta"><span>Botão</span></div>
+    <div class="cor"><input type="color" data-k="cor_texto_cta"><span>Texto do botão</span></div>
+
+    <h2>Ganchos automáticos</h2>
+    <p style="margin:0 0 6px;color:var(--sutil);font-size:12px">Um por linha. Usados em rodízio nos vídeos sem gancho próprio.</p>
+    <textarea data-k="ganchos"></textarea>
+  </section>
+
+  <!-- PREVIA -->
+  <section class="previa">
+    <div class="celular"><img id="imgPrevia" alt="Prévia do molde"></div>
+    <div class="info" id="infoPrevia">Prévia com um quadro de exemplo</div>
+
+    <div class="card corte" id="corte" hidden>
+      <h2>Corte <span class="tag" id="tagCorte"></span></h2>
+      <div class="quadro"><img id="imgQuadro" alt="Quadro original"><div class="area" id="area"></div></div>
+      <div class="grade">
+        <div><label>Topo <span class="valor" data-cv="topo"></span></label>
+          <input type="range" min="0" max="45" step="0.5" data-c="topo"></div>
+        <div><label>Base <span class="valor" data-cv="base"></span></label>
+          <input type="range" min="0" max="45" step="0.5" data-c="base"></div>
+        <div><label>Esquerda <span class="valor" data-cv="esq"></span></label>
+          <input type="range" min="0" max="45" step="0.5" data-c="esq"></div>
+        <div><label>Direita <span class="valor" data-cv="dir"></span></label>
+          <input type="range" min="0" max="45" step="0.5" data-c="dir"></div>
+        <div><label>Início (s)</label><input type="number" min="0" step="0.1" data-c="inicio"></div>
+        <div><label>Fim (s) <span class="valor" id="duracao"></span></label>
+          <input type="number" min="0" step="0.1" data-c="fim" placeholder="até o fim"></div>
+      </div>
+      <div class="rodape">
+        <button class="prim" id="btnPadrao" title="Vale para todo vídeo sem corte próprio, inclusive os que você subir depois">Definir como padrão</button>
+        <button id="btnLote">Aplicar aos selecionados</button>
+        <button id="btnCorte">Só neste vídeo</button>
+      </div>
+      <div class="rodape">
+        <button id="btnUsarPadrao">Voltar ao padrão</button>
+        <button id="btnZerar">Zerar sliders</button>
+      </div>
+      <div class="info" id="corteSalvo" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <!-- VIDEOS -->
+  <section class="card">
+    <h2>Vídeos <span id="contagem" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="drop" id="drop">Arraste os vídeos aqui ou clique para escolher
+      <input type="file" id="arquivo" accept="video/*" multiple hidden></div>
+
+    <button class="prim" id="btnMassa" style="width:100%;margin-bottom:8px">✂ Corte em massa: ver e cortar todos</button>
+    <button id="btnIg" style="width:100%;margin-bottom:12px">📤 Publicar no Instagram</button>
+    <div class="ferramentas">
+      <label class="check" style="margin:0"><input type="checkbox" id="selTodos"> Todos</label>
+      <select id="filtro" style="width:auto">
+        <option value="todos">Mostrar todos</option>
+        <option value="pendentes">Só pendentes</option>
+        <option value="prontos">Só prontos</option>
+      </select>
+      <span class="info" id="qtdSel"></span>
+    </div>
+    <div id="lista" class="lista"></div>
+
+    <h2>Legenda</h2>
+    <div class="rodape">
+      <button id="btnCcLiga">Legendar selecionados</button>
+      <button id="btnCcDesliga">Sem legenda nos selecionados</button>
+      <button id="btnCcPadrao">Seguir o padrão</button>
+    </div>
+    <div class="info" id="txtLegenda" style="margin-top:8px"></div>
+
+    <h2>Render</h2>
+    <div class="ferramentas">
+      <label style="margin:0">Ao mesmo tempo</label>
+      <select id="simultaneos" style="width:auto">
+        <option>1</option><option>2</option><option selected>3</option>
+        <option>4</option><option>5</option><option>6</option>
+      </select>
+    </div>
+    <div id="progresso" hidden>
+      <div class="barra"><div id="barra"></div></div>
+      <div class="info" id="txtProgresso"></div>
+    </div>
+    <div class="rodape">
+      <button class="prim" id="btnRender">Renderizar pendentes</button>
+      <button id="btnRenderSel">Renderizar selecionados</button>
+      <button id="btnRefazerSel">Refazer selecionados</button>
+      <button id="btnParar" hidden>Parar</button>
+    </div>
+
+    <h2>Limpeza</h2>
+    <div class="rodape">
+      <button id="btnLimparRenders">Apagar renders dos selecionados</button>
+      <button id="btnLimparOriginais" class="perigo">Apagar selecionados</button>
+      <button id="btnLimparCache">Limpar cache da memória</button>
+    </div>
+    <div class="rodape">
+      <button id="btnLimparProntos" class="perigo">Apagar todos os prontos</button>
+      <button id="btnLimparTudo" class="perigo">Apagar tudo da fila</button>
+    </div>
+    <div class="info" id="txtLimpeza" style="margin-top:8px"></div>
+  </section>
+</main>
+
+<section class="massa" id="massa" hidden>
+  <div class="barra-topo">
+    <div><label>Topo <span class="valor" data-mv="topo"></span></label>
+      <input type="range" min="0" max="45" step="0.5" data-m="topo"></div>
+    <div><label>Base <span class="valor" data-mv="base"></span></label>
+      <input type="range" min="0" max="45" step="0.5" data-m="base"></div>
+    <div><label>Esquerda <span class="valor" data-mv="esq"></span></label>
+      <input type="range" min="0" max="45" step="0.5" data-m="esq"></div>
+    <div><label>Direita <span class="valor" data-mv="dir"></span></label>
+      <input type="range" min="0" max="45" step="0.5" data-m="dir"></div>
+    <button id="btnMassaFechar">Fechar</button>
+    <div class="acoes-topo">
+      <select id="massaEscopo" style="width:auto">
+        <option value="todos">Todos os vídeos</option>
+        <option value="sel">Só os selecionados</option>
+      </select>
+      <label class="check" style="margin:0"><input type="checkbox" id="massaFinal"> Ver resultado final (no molde)</label>
+      <span style="flex:1"></span>
+      <button class="prim" id="btnMassaAplicar">Aplicar a todos</button>
+      <button id="btnMassaPadrao" title="Vale para quem não tem corte próprio e para os próximos vídeos que subir">Definir como padrão</button>
+      <span class="info" id="massaInfo"></span>
+    </div>
+  </div>
+  <div class="grade-videos" id="massaGrade"></div>
+</section>
+
+<section class="massa ig" id="ig" hidden>
+  <div class="barra-topo" style="grid-template-columns:1fr auto">
+    <h2 style="margin:0">📤 Publicar no Instagram <span class="info" id="igResumo" style="text-transform:none;letter-spacing:0"></span></h2>
+    <button id="btnIgFechar">Fechar</button>
+  </div>
+  <div class="corpo">
+    <div>
+      <div class="card">
+        <h2>Conta</h2>
+        <div id="igContas"></div>
+        <div class="info" id="igLimite"></div>
+        <details id="igConectarBox">
+          <summary style="cursor:pointer;font-weight:600">Conectar uma conta</summary>
+          <ol>
+            <li>A conta do Instagram precisa ser <b>Profissional</b> (Criador ou Empresa) e estar <b>ligada a uma Página do Facebook</b>.</li>
+            <li>Abra o <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Graph API Explorer</a>, escolha o seu app e adicione as permissões:
+              <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>business_management</code>.</li>
+            <li>Clique em <b>Generate Access Token</b>, autorize, copie o token e cole aqui embaixo.</li>
+            <li>Opcional, mas recomendado: com o <b>ID e a Chave secreta do app</b> (Configurações › Básico) o token vira permanente. Sem eles, ele vence em cerca de 1 hora.</li>
+          </ol>
+          <label>Token de acesso</label>
+          <input type="password" id="igToken" autocomplete="off" placeholder="EAAB…">
+          <label>ID do app (opcional)</label>
+          <input type="text" id="igAppId" autocomplete="off">
+          <label>Chave secreta do app (opcional)</label>
+          <input type="password" id="igAppSecret" autocomplete="off">
+          <div class="rodape"><button class="prim" id="btnIgConectar">Conectar</button></div>
+          <div class="info" id="igConectarMsg" style="margin-top:6px"></div>
+        </details>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Legenda do post</h2>
+        <label>Modelo ({gancho} vira o gancho de cada vídeo)</label>
+        <textarea id="igModelo"></textarea>
+        <label>Hashtags</label>
+        <input type="text" id="igHashtags">
+        <h2>Horários</h2>
+        <div class="grade" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 10px">
+          <div><label>Posts por dia</label><input type="number" min="1" max="50" id="igPorDia"></div>
+          <div><label>Primeiro post</label><input type="time" id="igInicio"></div>
+          <div><label>Intervalo (min)</label><input type="number" min="5" max="1440" step="5" id="igIntervalo"></div>
+        </div>
+        <div class="rodape"><button id="btnIgSalvarCfg">Salvar</button><span class="info" id="igCfgMsg" style="align-self:center"></span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Fila de publicação</h2>
+      <div class="rodape" style="margin-top:0;margin-bottom:10px">
+        <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
+        <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
+        <span style="flex:1"></span>
+        <button id="btnIgLimparHist">Limpar publicados</button>
+      </div>
+      <div class="info" id="igFilaMsg" style="margin-bottom:8px"></div>
+      <div id="igFila"></div>
+    </div>
+  </div>
+</section>
+
+<dialog id="player"><video controls autoplay id="playerVideo"></video></dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const sel = new Set();
+let corte = null, corteSalvo = "", videos = [], rodando = false;
+let molde = {}, salvo = "", videoAtivo = null, ganchoAtivo = "", timer = null, ctrl = null;
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const post = (url, corpo) => fetch(url, {method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(corpo || {})});
+
+/* ------------------------------------------------------------ molde */
+
+function lerControles() {
+  document.querySelectorAll("[data-k]").forEach(el => {
+    const k = el.dataset.k;
+    if (el.type === "checkbox") molde[k] = el.checked;
+    else if (el.type === "range") molde[k] = Number(el.value);
+    else if (k === "ganchos") molde[k] = el.value.split("\n").map(s => s.trim()).filter(Boolean);
+    else molde[k] = el.value;
+  });
+  document.querySelectorAll("[data-v]").forEach(el => el.textContent = molde[el.dataset.v]);
+}
+
+function preencher() {
+  document.querySelectorAll("[data-k]").forEach(el => {
+    const v = molde[el.dataset.k];
+    if (el.type === "checkbox") el.checked = !!v;
+    else if (el.dataset.k === "ganchos") el.value = (v || []).join("\n");
+    else el.value = v;
+  });
+  lerControles();
+}
+
+function marcarSalvo() {
+  const sujo = JSON.stringify(molde) !== salvo;
+  $("#salvo").textContent = sujo ? "alterações não salvas" : "molde salvo";
+  $("#salvo").style.color = sujo ? "var(--acento)" : "";
+}
+
+async function atualizarPrevia() {
+  if (ctrl) ctrl.abort();
+  ctrl = new AbortController();
+  $("#imgPrevia").classList.add("carregando");
+  try {
+    const r = await fetch("/api/previa", {
+      method: "POST", headers: {"Content-Type": "application/json"}, signal: ctrl.signal,
+      body: JSON.stringify(Object.assign({molde, video: videoAtivo, gancho: ganchoAtivo},
+                                         corte ? {corte} : {})),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    const url = URL.createObjectURL(await r.blob());
+    const img = $("#imgPrevia"), antigo = img.src;
+    img.src = url;
+    if (antigo.startsWith("blob:")) URL.revokeObjectURL(antigo);
+  } catch (e) { if (e.name !== "AbortError") console.error(e); }
+  $("#imgPrevia").classList.remove("carregando");
+}
+
+function mudou() {
+  lerControles(); marcarSalvo();
+  clearTimeout(timer); timer = setTimeout(atualizarPrevia, 250);
+}
+
+async function salvar() {
+  const r = await post("/api/molde", molde);
+  if (!r.ok) {
+    $("#salvo").textContent = (await r.json()).detail || "não foi possível salvar";
+    $("#salvo").style.color = "var(--acento)";
+    return;
+  }
+  molde = await r.json();
+  salvo = JSON.stringify(molde); marcarSalvo();
+  carregarVideos();
+}
+
+/* ------------------------------------------------------------ lista */
+
+async function carregarVideos() {
+  videos = await (await fetch("/api/videos")).json();
+  const nomes = new Set(videos.map(v => v.nome));
+  [...sel].forEach(n => { if (!nomes.has(n)) sel.delete(n); });
+  if (videoAtivo && !nomes.has(videoAtivo)) { videoAtivo = null; corte = null; $("#corte").hidden = true; }
+  desenharLista();
+}
+
+function visiveis() {
+  const f = $("#filtro").value;
+  return videos.filter(v => f === "todos" || (f === "prontos") === v.pronto);
+}
+
+function tagStatus(v) {
+  if (v.renderizando) return '<span class="tag rodando">renderizando</span>';
+  return v.pronto ? '<span class="tag ok">pronto</span>' : '<span class="tag">pendente</span>';
+}
+
+function desenharLista() {
+  const prontos = videos.filter(v => v.pronto).length;
+  $("#contagem").textContent = videos.length ? `· ${videos.length} (${prontos} prontos)` : "";
+  const lista = $("#lista"), vis = visiveis();
+  if (!vis.length) {
+    lista.innerHTML = `<div class="vazio">${videos.length ? "Nada neste filtro." : "Nenhum vídeo em filmes\\entrada ainda."}</div>`;
+  } else {
+    lista.innerHTML = vis.map(v => `
+      <div class="video ${v.nome === videoAtivo ? "ativo" : ""}" data-nome="${esc(v.nome)}">
+        <div class="topo">
+          <input type="checkbox" class="sel" ${sel.has(v.nome) ? "checked" : ""}>
+          <span class="nome" title="${esc(v.nome)}">${esc(v.nome)}</span>
+          ${v.corte_proprio ? '<span class="tag" title="Corte próprio, ignora o padrão">✂ próprio</span>' : ""}
+          ${v.legendar ? `<span class="tag" title="${v.legenda_propria ? "Legenda ligada neste vídeo" : "Legenda pelo padrão do molde"}">CC</span>` : ""}
+          <span class="status">${tagStatus(v)}</span>
+        </div>
+        <input type="text" class="gancho" value="${esc(v.gancho)}" placeholder="${esc(v.gancho_auto)}">
+        <div class="acoes">
+          <button data-a="ver">Ver / cortar</button>
+          ${v.pronto ? '<button data-a="assistir">▶ Assistir</button>' : ""}
+        </div>
+      </div>`).join("");
+  }
+  atualizarSelecao();
+}
+
+function atualizarSelecao() {
+  const vis = visiveis();
+  $("#selTodos").checked = vis.length > 0 && vis.every(v => sel.has(v.nome));
+  $("#qtdSel").textContent = sel.size ? `${sel.size} selecionado(s)` : "";
+  $("#btnLote").textContent = `Aplicar aos selecionados (${sel.size})`;
+  $("#btnLote").disabled = !sel.size;
+  ["#btnRenderSel", "#btnRefazerSel", "#btnLimparRenders", "#btnLimparOriginais"]
+    .forEach(id => $(id).disabled = !sel.size || rodando);
+  ["#btnCcLiga", "#btnCcDesliga", "#btnCcPadrao"].forEach(id => $(id).disabled = !sel.size);
+}
+
+$("#selTodos").addEventListener("change", e => {
+  visiveis().forEach(v => e.target.checked ? sel.add(v.nome) : sel.delete(v.nome));
+  desenharLista();
+});
+$("#filtro").addEventListener("change", desenharLista);
+
+$("#lista").addEventListener("click", async e => {
+  if (e.target.classList.contains("sel")) {
+    const nome = e.target.closest(".video").dataset.nome;
+    e.target.checked ? sel.add(nome) : sel.delete(nome);
+    atualizarSelecao();
+    return;
+  }
+  const b = e.target.closest("button"); if (!b) return;
+  const card = b.closest(".video"), nome = card.dataset.nome;
+  if (b.dataset.a === "ver") {
+    videoAtivo = nome;
+    ganchoAtivo = card.querySelector(".gancho").value || card.querySelector(".gancho").placeholder;
+    document.querySelectorAll(".video").forEach(c => c.classList.toggle("ativo", c === card));
+    $("#infoPrevia").textContent = "Prévia: " + nome;
+    abrirCorte(videos.find(v => v.nome === nome));
+    atualizarPrevia();
+  } else if (b.dataset.a === "assistir") {
+    $("#playerVideo").src = "/saida/" + encodeURIComponent(nome) + "?t=" + Date.now();
+    $("#player").showModal();
+  }
+});
+
+$("#lista").addEventListener("change", async e => {
+  if (!e.target.classList.contains("gancho")) return;
+  const card = e.target.closest(".video");
+  const r = await post("/api/gancho", {video: card.dataset.nome, gancho: e.target.value});
+  if (!r.ok) {
+    const v0 = videos.find(x => x.nome === card.dataset.nome);
+    e.target.value = v0 ? v0.gancho : "";   // desfaz: não foi salvo
+    card.querySelector(".status").innerHTML =
+      `<span class="tag rodando" title="${esc((await r.json()).detail || "")}">não salvo: na fila</span>`;
+    return;
+  }
+  if (card.dataset.nome === videoAtivo) {
+    ganchoAtivo = e.target.value || e.target.placeholder; atualizarPrevia();
+  }
+  const v = videos.find(x => x.nome === card.dataset.nome);
+  if (v) { v.gancho = e.target.value; v.pronto = false;
+           card.querySelector(".status").innerHTML = tagStatus(v); }
+});
+
+$("#player").addEventListener("click", e => {
+  if (e.target === $("#player")) { $("#playerVideo").pause(); $("#player").close(); }
+});
+
+async function enviar(arquivos) {
+  const lista = [...arquivos];
+  for (let i = 0; i < lista.length; i += 10) {   // em blocos: 100 vídeos não viram um upload só
+    $("#drop").textContent = `Enviando ${Math.min(i + 10, lista.length)} de ${lista.length}…`;
+    const fd = new FormData();
+    lista.slice(i, i + 10).forEach(a => fd.append("arquivos", a));
+    await fetch("/api/upload", {method: "POST", body: fd});
+  }
+  $("#drop").textContent = "Arraste os vídeos aqui ou clique para escolher";
+  carregarVideos();
+}
+$("#drop").addEventListener("click", () => $("#arquivo").click());
+$("#arquivo").addEventListener("change", e => { enviar(e.target.files); e.target.value = ""; });
+["dragover", "dragenter"].forEach(t => $("#drop").addEventListener(t, e => {
+  e.preventDefault(); $("#drop").classList.add("sobre"); }));
+["dragleave", "drop"].forEach(t => $("#drop").addEventListener(t, e => {
+  e.preventDefault(); $("#drop").classList.remove("sobre"); }));
+$("#drop").addEventListener("drop", e => enviar(e.dataTransfer.files));
+
+/* ------------------------------------------------------------ render */
+
+async function renderizar(opcoes) {
+  if (JSON.stringify(molde) !== salvo) await salvar();
+  const r = await post("/api/renderizar",
+    {...opcoes, simultaneos: Number($("#simultaneos").value)});
+  if (r.status === 409) { avisoRender("Já tem um render rodando."); return; }
+  const d = await r.json();
+  if (!d.total) { avisoRender("Nada para renderizar: tudo já está pronto."); return; }
+  acompanhar();
+}
+function avisoRender(t) { $("#progresso").hidden = false; $("#txtProgresso").textContent = t; }
+
+async function acompanhar() {
+  const s = await (await fetch("/api/status")).json();
+  const eraRodando = rodando;
+  rodando = s.rodando;
+  $("#btnRender").disabled = $("#btnLimparProntos").disabled = $("#btnLimparTudo").disabled = rodando;
+  $("#btnParar").hidden = !rodando;
+  $("#btnParar").disabled = s.parando;
+  atualizarSelecao();
+  if (s.total || rodando) {
+    $("#progresso").hidden = false;
+    const emAndamento = Object.values(s.ativos)
+      .reduce((a, p) => a + (typeof p === "number" ? p / 100 : 0), 0);
+    $("#barra").style.width = (s.total ? 100 * (s.feitos + emAndamento) / s.total : 0) + "%";
+    $("#txtProgresso").textContent = rodando
+      ? `${s.parando ? "Parando… " : ""}${s.feitos} de ${s.total} feitos · ` +
+        `${Object.keys(s.ativos).length} em andamento`
+      : `Pronto: ${s.feitos} vídeo(s)` + (s.erros.length ? ` · ${s.erros.length} erro(s) (passe o mouse)` : "");
+    $("#txtProgresso").title = s.erros.join("\n");
+  }
+  // marca na lista quem está rodando sem redesenhar (não perde o foco do gancho)
+  videos.forEach(v => {
+    const ativo = v.nome in s.ativos;
+    v.renderizando = ativo;
+    const card = document.querySelector(`.video[data-nome="${CSS.escape(v.nome)}"] .status`);
+    const fase = s.ativos[v.nome];
+    if (card) card.innerHTML = ativo
+      ? `<span class="tag rodando">${typeof fase === "number" ? fase + "%" : fase}</span>`
+      : tagStatus(v);
+  });
+  if (rodando) setTimeout(acompanhar, 1000);
+  else if (eraRodando) carregarVideos();
+}
+
+$("#btnRender").addEventListener("click", () => renderizar({}));
+$("#btnRenderSel").addEventListener("click", () => renderizar({videos: [...sel]}));
+$("#btnRefazerSel").addEventListener("click", () => {
+  if (confirm(`Refazer ${sel.size} vídeo(s), mesmo os que já estão prontos?`))
+    renderizar({videos: [...sel], refazer: true});
+});
+$("#btnParar").addEventListener("click", async () => { await post("/api/parar"); acompanhar(); });
+
+/* ------------------------------------------------------------ corte */
+
+function abrirCorte(v) {
+  corte = {...v.corte}; corteSalvo = JSON.stringify(corte);
+  $("#corte").hidden = false;
+  $("#tagCorte").textContent = v.corte_proprio ? "próprio deste vídeo" : "usando o padrão";
+  $("#imgQuadro").src = "/api/quadro/" + encodeURIComponent(v.nome) + "?t=" + Date.now();
+  $("#duracao").textContent = v.duracao ? `de ${v.duracao}s` : "";
+  preencherCorte();
+}
+
+function preencherCorte() {
+  document.querySelectorAll("[data-c]").forEach(el => {
+    const val = corte[el.dataset.c];
+    el.value = el.dataset.c === "fim" && !val ? "" : val;
+  });
+  desenharCorte();
+}
+
+function desenharCorte() {
+  const a = $("#area").style;
+  a.top = corte.topo + "%"; a.bottom = corte.base + "%";
+  a.left = corte.esq + "%"; a.right = corte.dir + "%";
+  document.querySelectorAll("[data-cv]").forEach(el => el.textContent = corte[el.dataset.cv] + "%");
+  const sujo = JSON.stringify(corte) !== corteSalvo;
+  $("#corteSalvo").textContent = sujo ? "Alterado, ainda não salvo." : "";
+  $("#corteSalvo").style.color = sujo ? "var(--acento)" : "";
+}
+
+function avisoCorte(t) {
+  $("#corteSalvo").textContent = t; $("#corteSalvo").style.color = "";
+}
+
+$("#corte").addEventListener("input", e => {
+  const k = e.target.dataset.c; if (!k) return;
+  corte[k] = Number(e.target.value) || 0;
+  desenharCorte();
+  clearTimeout(timer); timer = setTimeout(atualizarPrevia, 250);
+});
+
+function sincronizarCorte() {
+  const v = videos.find(x => x.nome === videoAtivo);
+  if (!v) return null;
+  corte = {...v.corte}; corteSalvo = JSON.stringify(corte);
+  $("#tagCorte").textContent = v.corte_proprio ? "próprio deste vídeo" : "usando o padrão";
+  preencherCorte(); atualizarPrevia();
+  return v;
+}
+
+$("#btnPadrao").addEventListener("click", acaoCorte(async () => {
+  const r = await post("/api/corte/padrao", {corte});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "Não foi possível salvar o padrão.");
+  molde.corte_padrao = d.corte_padrao;
+  salvo = JSON.stringify({...JSON.parse(salvo || "{}"), corte_padrao: d.corte_padrao});
+  marcarSalvo();
+  await carregarVideos();
+  const v = sincronizarCorte();
+  const extra = d.renders_apagados ? ` ${d.renders_apagados} render(s) voltaram para pendente.` : "";
+  avisoCorte(v && v.corte_proprio
+    ? "Padrão salvo. Este vídeo tem corte próprio e continua com ele (use “Voltar ao padrão”)." + extra
+    : "Padrão salvo: vale para todos sem corte próprio e para os próximos que subir." + extra);
+}));
+
+async function cortar(nomes, valor) {
+  const r = await post("/api/corte", {videos: nomes, corte: valor});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "Não foi possível salvar o corte.");
+  await carregarVideos();
+  sincronizarCorte();
+  return d.alterados;
+}
+
+// botões de corte: mostra o motivo quando o servidor recusa (ex.: vídeo na fila do render)
+function acaoCorte(fn) {
+  return async () => {
+    try { await fn(); } catch (e) {
+      $("#corteSalvo").textContent = e.message; $("#corteSalvo").style.color = "var(--acento)";
+    }
+  };
+}
+
+$("#btnCorte").addEventListener("click", acaoCorte(async () => {
+  await cortar([videoAtivo], corte);
+  avisoCorte("Corte próprio salvo neste vídeo. Ele voltou para pendente.");
+}));
+
+$("#btnLote").addEventListener("click", acaoCorte(async () => {
+  const n = await cortar([...sel], {...corte});
+  avisoCorte(`Corte aplicado a ${n} vídeo(s). Eles voltaram para pendente.`);
+}));
+
+$("#btnUsarPadrao").addEventListener("click", acaoCorte(async () => {
+  await cortar([videoAtivo], null);
+  avisoCorte("Este vídeo voltou a usar o corte padrão.");
+}));
+
+$("#btnZerar").addEventListener("click", () => {
+  Object.keys(corte).forEach(k => corte[k] = 0);
+  preencherCorte(); atualizarPrevia();
+});
+
+/* ------------------------------------------------------------ corte em massa */
+
+const corteMassa = {topo: 0, base: 0, esq: 0, dir: 0};
+let timerFinal = null;
+
+function alvosMassa() {
+  return $("#massaEscopo").value === "sel" ? videos.filter(v => sel.has(v.nome)) : videos;
+}
+
+function abrirMassa() {
+  if (!videos.length) { $("#txtLimpeza").textContent = "Suba vídeos antes de cortar."; return; }
+  // começa do corte padrão; se não houver, do corte do vídeo aberto
+  const base = Object.values(molde.corte_padrao || {}).some(x => x > 0)
+    ? molde.corte_padrao : (corte || {});
+  ["topo", "base", "esq", "dir"].forEach(k => corteMassa[k] = Number(base[k]) || 0);
+  document.querySelectorAll("[data-m]").forEach(el => el.value = corteMassa[el.dataset.m]);
+  $("#massaEscopo").value = sel.size ? "sel" : "todos";
+  $("#massaInfo").textContent = "";
+  $("#massa").hidden = false;
+  document.body.style.overflow = "hidden";
+  desenharMassa();
+}
+
+function fecharMassa() {
+  $("#massa").hidden = true;
+  document.body.style.overflow = "";
+}
+
+function desenharMassa() {
+  const alvos = alvosMassa(), final = $("#massaFinal").checked;
+  document.querySelectorAll("[data-mv]").forEach(el => el.textContent = corteMassa[el.dataset.mv] + "%");
+  const proprios = alvos.filter(v => v.corte_proprio).length;
+  $("#btnMassaAplicar").textContent = `Aplicar a ${alvos.length} vídeo(s)`;
+  $("#btnMassaPadrao").disabled = $("#massaEscopo").value === "sel";
+  $("#massaGrade").innerHTML = alvos.length ? alvos.map(v => `
+    <div class="item" data-nome="${esc(v.nome)}">
+      <div class="moldura">${final
+        ? `<img class="final" loading="lazy" alt="" src="${urlFinal(v.nome)}">`
+        : `<img loading="lazy" alt="" src="/api/quadro/${encodeURIComponent(v.nome)}?lado=360"><div class="area"></div>`}
+      </div>
+      <div class="rotulo"><span title="${esc(v.nome)}">${esc(v.nome)}</span>
+        ${v.corte_proprio ? '<span class="tag" title="Tem corte próprio salvo">✂</span>' : ""}</div>
+    </div>`).join("")
+    : '<div class="vazio">Nenhum vídeo selecionado. Troque para “Todos os vídeos”.</div>';
+  posicionarAreas();
+  if (proprios && $("#massaEscopo").value === "todos")
+    $("#massaInfo").textContent = `${proprios} vídeo(s) têm corte próprio: “Definir como padrão” não muda esses; “Aplicar” sobrescreve.`;
+}
+
+function urlFinal(nome) {
+  const q = new URLSearchParams(Object.entries(corteMassa).map(([k, x]) => [k, x]));
+  return `/api/miniatura/${encodeURIComponent(nome)}?${q}`;
+}
+
+function posicionarAreas() {
+  document.querySelectorAll("#massaGrade .area").forEach(a => {
+    a.style.top = corteMassa.topo + "%"; a.style.bottom = corteMassa.base + "%";
+    a.style.left = corteMassa.esq + "%"; a.style.right = corteMassa.dir + "%";
+  });
+}
+
+$("#massa").addEventListener("input", e => {
+  const k = e.target.dataset.m; if (!k) return;
+  corteMassa[k] = Number(e.target.value) || 0;
+  document.querySelectorAll("[data-mv]").forEach(el => el.textContent = corteMassa[el.dataset.mv] + "%");
+  posicionarAreas();                       // instantâneo no quadro original
+  if ($("#massaFinal").checked) {          // o resultado final pede o servidor: espera soltar
+    clearTimeout(timerFinal);
+    timerFinal = setTimeout(() => document.querySelectorAll("#massaGrade img.final")
+      .forEach(img => img.src = urlFinal(img.closest(".item").dataset.nome)), 400);
+  }
+});
+$("#massaEscopo").addEventListener("change", desenharMassa);
+$("#massaFinal").addEventListener("change", desenharMassa);
+$("#btnMassa").addEventListener("click", abrirMassa);
+$("#btnMassaFechar").addEventListener("click", fecharMassa);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#massa").hidden) fecharMassa(); });
+
+$("#btnMassaAplicar").addEventListener("click", async () => {
+  const alvos = alvosMassa();
+  if (!alvos.length) return;
+  if (!confirm(`Aplicar este corte a ${alvos.length} vídeo(s)? Eles voltam para pendente.`)) return;
+  const r = await post("/api/corte", {videos: alvos.map(v => v.nome), corte: {...corteMassa}});
+  const d = await r.json();
+  $("#massaInfo").textContent = r.ok
+    ? `Corte aplicado a ${d.alterados} vídeo(s). Agora é só renderizar.`
+    : (d.detail || "Não foi possível aplicar.");
+  if (r.ok) { await carregarVideos(); desenharMassa(); }
+});
+
+$("#btnMassaPadrao").addEventListener("click", async () => {
+  const r = await post("/api/corte/padrao", {corte: {...molde.corte_padrao, ...corteMassa}});
+  const d = await r.json();
+  if (!r.ok) { $("#massaInfo").textContent = d.detail || "Não foi possível salvar o padrão."; return; }
+  molde.corte_padrao = d.corte_padrao;
+  salvo = JSON.stringify({...JSON.parse(salvo || "{}"), corte_padrao: d.corte_padrao});
+  await carregarVideos(); desenharMassa();
+  $("#massaInfo").textContent = "Padrão salvo: vale para quem não tem corte próprio e para os próximos vídeos." +
+    (d.renders_apagados ? ` ${d.renders_apagados} voltaram para pendente.` : "");
+});
+
+/* ------------------------------------------------------------ instagram */
+
+let igEstado = {config: {contas: []}, fila: []}, igTimer = null;
+
+async function igCarregar() {
+  igEstado = await (await fetch("/api/ig")).json();
+  igDesenhar();
+}
+
+function igDesenhar() {
+  const c = igEstado.config, f = igEstado.fila;
+  $("#igContas").innerHTML = c.contas.length ? c.contas.map(x => `
+    <div class="conta">
+      <input type="radio" name="igAtiva" value="${esc(x.ig_id)}" ${x.ig_id === c.ativa ? "checked" : ""}>
+      <b>@${esc(x.username)}</b><span class="info">${esc(x.pagina)}</span>
+      <button data-sair="${esc(x.ig_id)}" style="padding:2px 8px;font-size:12px">Remover</button>
+    </div>`).join("") : '<div class="info">Nenhuma conta conectada.</div>';
+  $("#igConectarBox").open = !c.contas.length;
+
+  const pend = f.filter(x => x.status === "pendente").length;
+  const pub = f.filter(x => x.status === "publicado").length;
+  const err = f.filter(x => x.status === "erro").length;
+  $("#igResumo").textContent = `· ${pend} na fila · ${pub} publicados` + (err ? ` · ${err} com erro` : "");
+
+  const ordem = {publicando: 0, erro: 1, pendente: 2, publicado: 3};
+  const lista = [...f].sort((a, b) => (ordem[a.status] - ordem[b.status]) ||
+    (a.status === "publicado" ? b.quando.localeCompare(a.quando) : a.quando.localeCompare(b.quando)));
+  $("#igFila").innerHTML = lista.length ? `<table><thead><tr>
+      <th>Quando</th><th>Vídeo</th><th>Conta</th><th>Status</th><th>Legenda</th><th></th></tr></thead><tbody>` +
+    lista.map(x => `<tr data-id="${esc(x.id)}">
+      <td>${esc(x.quando.replace("T", " "))}</td>
+      <td><div class="nome" title="${esc(x.video)}">${esc(x.video)}</div></td>
+      <td>@${esc(x.username)}</td>
+      <td><span class="tag ${x.status === "publicado" ? "ok" : x.status === "erro" ? "erro" : x.status === "publicando" ? "rodando" : ""}"
+            title="${esc(x.erro || "")}">${x.status}</span>
+          ${x.erro && x.status !== "publicado" ? `<div class="info" style="font-size:11px;margin-top:4px">${esc(x.erro)}</div>` : ""}
+          ${x.permalink ? `<div><a href="${esc(x.permalink)}" target="_blank" rel="noopener">ver post</a></div>` : ""}</td>
+      <td>${x.status === "pendente"
+          ? `<textarea class="igLeg">${esc(x.legenda)}</textarea>`
+          : `<div class="info" style="white-space:pre-wrap;font-size:12px">${esc(x.legenda.slice(0, 140))}</div>`}</td>
+      <td>${["pendente", "erro"].includes(x.status)
+          ? `<button data-agora style="padding:4px 8px;font-size:12px">Publicar agora</button>
+             <button data-tirar style="padding:4px 8px;font-size:12px;margin-top:4px">Tirar</button>` : ""}</td>
+    </tr>`).join("") + "</tbody></table>"
+    : '<div class="vazio">Fila vazia. Selecione vídeos prontos e clique em “Agendar”.</div>';
+}
+
+let igCfgCarregada = false;
+function igPreencherCfg() {
+  const c = igEstado.config;
+  $("#igModelo").value = c.legenda_modelo; $("#igHashtags").value = c.hashtags;
+  $("#igPorDia").value = c.por_dia; $("#igInicio").value = c.inicio;
+  $("#igIntervalo").value = c.intervalo_min;
+  igCfgCarregada = true;
+}
+
+async function igAbrir() {
+  $("#ig").hidden = false; document.body.style.overflow = "hidden";
+  igCfgCarregada = false;
+  await igCarregar();
+  igPreencherCfg();   // só ao abrir: a atualização automática não apaga o que se digita
+  igLimite();
+  clearInterval(igTimer); igTimer = setInterval(igCarregarFila, 10000);
+}
+function igFechar() {
+  $("#ig").hidden = true; document.body.style.overflow = ""; clearInterval(igTimer);
+}
+async function igCarregarFila() {
+  // só a fila: não sobrescreve um campo que a pessoa está digitando
+  if (document.activeElement?.classList?.contains("igLeg")) return;
+  igEstado.fila = (await (await fetch("/api/ig")).json()).fila;
+  igDesenhar();
+}
+async function igLimite() {
+  if (!igEstado.config.contas.length) { $("#igLimite").textContent = ""; return; }
+  const r = await fetch("/api/ig/limite"), d = await r.json();
+  $("#igLimite").textContent = r.ok
+    ? `Limite da conta: ${d.usado} de ${d.limite} posts usados nas últimas 24h.`
+    : `⚠ ${d.detail}`;
+}
+
+$("#btnIg").addEventListener("click", igAbrir);
+$("#btnIgFechar").addEventListener("click", igFechar);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#ig").hidden) igFechar(); });
+
+$("#btnIgConectar").addEventListener("click", async () => {
+  $("#igConectarMsg").textContent = "Conectando…";
+  const r = await post("/api/ig/conectar", {token: $("#igToken").value,
+    app_id: $("#igAppId").value, app_secret: $("#igAppSecret").value});
+  const d = await r.json();
+  if (!r.ok) { $("#igConectarMsg").textContent = "⚠ " + (d.detail || "falhou"); return; }
+  ["#igToken", "#igAppId", "#igAppSecret"].forEach(id => $(id).value = "");  // não fica na tela
+  igEstado.config = d;
+  $("#igConectarMsg").textContent = "Conectado: " + d.contas.map(x => "@" + x.username).join(", ");
+  igDesenhar(); igLimite();
+});
+
+$("#igContas").addEventListener("change", async e => {
+  if (e.target.name !== "igAtiva") return;
+  igEstado.config = await (await post("/api/ig/config", {ativa: e.target.value})).json();
+  igDesenhar(); igLimite();
+});
+$("#igContas").addEventListener("click", async e => {
+  const id = e.target.dataset.sair; if (!id) return;
+  if (!confirm("Remover esta conta do painel? Posts já agendados nela vão falhar.")) return;
+  igEstado.config = await (await post("/api/ig/desconectar", {ig_id: id})).json();
+  igDesenhar(); igLimite();
+});
+
+$("#btnIgSalvarCfg").addEventListener("click", async () => {
+  igEstado.config = await (await post("/api/ig/config", {
+    legenda_modelo: $("#igModelo").value, hashtags: $("#igHashtags").value,
+    por_dia: $("#igPorDia").value, inicio: $("#igInicio").value,
+    intervalo_min: $("#igIntervalo").value})).json();
+  igPreencherCfg();
+  $("#igCfgMsg").textContent = "Salvo. Vale para os próximos agendamentos.";
+});
+
+async function igAgendar(nomes) {
+  if (!nomes.length) { $("#igFilaMsg").textContent = "Nenhum vídeo pronto para agendar."; return; }
+  const r = await post("/api/ig/agendar", {videos: nomes});
+  const d = await r.json();
+  if (!r.ok) { $("#igFilaMsg").textContent = "⚠ " + (d.detail || "falhou"); return; }
+  igEstado.fila = d.fila; igDesenhar();
+  $("#igFilaMsg").textContent = `${d.agendados} post(s) agendado(s).` +
+    (d.ignorados_sem_render ? ` ${d.ignorados_sem_render} ignorado(s) por ainda não estarem renderizados.` : "") +
+    (d.agendados < nomes.length - d.ignorados_sem_render ? " Os outros já estavam na fila." : "");
+}
+$("#btnIgAgendarSel").addEventListener("click", () =>
+  igAgendar(videos.filter(v => sel.has(v.nome) && v.pronto).map(v => v.nome)));
+$("#btnIgAgendarTodos").addEventListener("click", () => {
+  const naFila = new Set(igEstado.fila.filter(x => ["pendente", "publicando"].includes(x.status)).map(x => x.video));
+  igAgendar(videos.filter(v => v.pronto && !naFila.has(v.nome)).map(v => v.nome));
+});
+$("#btnIgLimparHist").addEventListener("click", async () => {
+  igEstado.fila = (await (await post("/api/ig/limpar-historico")).json()).fila; igDesenhar();
+});
+
+$("#igFila").addEventListener("click", async e => {
+  const tr = e.target.closest("tr[data-id]"); if (!tr) return;
+  const id = tr.dataset.id;
+  if (e.target.hasAttribute("data-agora")) {
+    if (!confirm("Publicar este vídeo agora? Sai em até 30 segundos.")) return;
+    const r = await post("/api/ig/agora", {id});
+    const d = await r.json();
+    if (r.ok) { igEstado.fila = d.fila; igDesenhar(); $("#igFilaMsg").textContent = "Vai sair em até 30 segundos."; }
+    else $("#igFilaMsg").textContent = "⚠ " + d.detail;
+  } else if (e.target.hasAttribute("data-tirar")) {
+    igEstado.fila = (await (await post("/api/ig/remover", {ids: [id]})).json()).fila; igDesenhar();
+  }
+});
+$("#igFila").addEventListener("change", async e => {
+  if (!e.target.classList.contains("igLeg")) return;
+  const id = e.target.closest("tr").dataset.id;
+  const r = await post("/api/ig/legenda", {id, legenda: e.target.value});
+  if (r.ok) $("#igFilaMsg").textContent = "Legenda do post salva.";
+});
+
+/* ------------------------------------------------------------ legenda */
+
+async function legenda(valor, texto) {
+  const r = await post("/api/legenda", {videos: [...sel], legendar: valor});
+  const d = await r.json();
+  $("#txtLegenda").textContent = r.ok
+    ? `${texto} em ${d.alterados} vídeo(s).` +
+      (d.renders_apagados ? ` ${d.renders_apagados} voltaram para pendente.` : "")
+    : (d.detail || "Não foi possível mudar a legenda.");
+  if (r.ok) carregarVideos();
+}
+$("#btnCcLiga").addEventListener("click", () => legenda(true, "Legenda ligada"));
+$("#btnCcDesliga").addEventListener("click", () => legenda(false, "Legenda desligada"));
+$("#btnCcPadrao").addEventListener("click", () => legenda(null, "Seguindo o padrão"));
+
+/* ------------------------------------------------------------ limpeza */
+
+async function limpar(alvo, nomes, pergunta, extra) {
+  if (pergunta && !confirm(pergunta)) return;
+  const r = await post("/api/limpar", {alvo, videos: nomes, ...extra});
+  const d = await r.json();
+  $("#txtLimpeza").textContent = r.ok
+    ? (alvo === "cache" ? `Cache limpo: ${d.limpos} item(ns) liberados da memória.`
+                        : `${d.limpos} vídeo(s) apagado(s).`)
+    : (d.detail || "Não foi possível limpar.");
+  if (r.ok && alvo !== "cache") {
+    if (alvo === "originais") sel.clear();
+    carregarVideos();
+  }
+}
+
+$("#btnLimparRenders").addEventListener("click", () => limpar("renders", [...sel],
+  `Apagar o vídeo pronto de ${sel.size} selecionado(s)? Os originais ficam.`));
+$("#btnLimparOriginais").addEventListener("click", () => limpar("originais", [...sel],
+  `Apagar ${sel.size} vídeo(s) por completo (original, gancho, corte e render)? Não dá para desfazer.`));
+$("#btnLimparCache").addEventListener("click", () => limpar("cache"));
+$("#btnLimparProntos").addEventListener("click", () => {
+  const n = videos.filter(v => v.pronto).length;
+  if (!n) { $("#txtLimpeza").textContent = "Nenhum vídeo pronto para apagar."; return; }
+  limpar("originais", [], `Apagar os ${n} vídeo(s) prontos (original e render)? Os pendentes ficam.`,
+         {todos: true, somente_prontos: true});
+});
+$("#btnLimparTudo").addEventListener("click", () => {
+  if (!videos.length) { $("#txtLimpeza").textContent = "A fila já está vazia."; return; }
+  limpar("originais", [], `Apagar TODOS os ${videos.length} vídeo(s) da fila, prontos e pendentes? Não dá para desfazer.`,
+         {todos: true});
+});
+
+/* ------------------------------------------------------------ início */
+
+$("#btnSalvar").addEventListener("click", salvar);
+$("#controles").addEventListener("input", mudou);
+$("#controles").addEventListener("change", mudou);
+
+(async () => {
+  const d = await (await fetch("/api/molde")).json();
+  $("#fonte").innerHTML = d.fontes.map(f => `<option>${esc(f)}</option>`).join("");
+  molde = d.molde; preencher(); salvo = JSON.stringify(molde); marcarSalvo();
+  ganchoAtivo = molde.ganchos[0] || "";
+  atualizarPrevia(); await carregarVideos(); acompanhar();
+})();
+</script>
+</body>
+</html>
