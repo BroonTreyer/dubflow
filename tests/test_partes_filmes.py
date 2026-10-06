@@ -97,7 +97,7 @@ def _pronto_em_partes(nome, n):
 def test_agenda_uma_publicacao_por_parte_em_ordem(meta, monkeypatch):
     ig.conectar("T")
     _pronto_em_partes("a.mp4", 2)
-    monkeypatch.setattr(pf, "_duracao", lambda v: 150.0)   # 150s = 2 partes de 75s
+    monkeypatch.setattr(pf, "_duracao", lambda v: 110.0)   # 110s = 2 partes de 55s
     api = TestClient(pf.app, base_url="http://127.0.0.1")
     r = api.post("/api/ig/agendar", json={"videos": ["a.mp4"]}).json()
     assert r["agendados"] == 2
@@ -166,9 +166,41 @@ def test_render_antigo_longo_nao_conta_como_pronto(meta, monkeypatch):
     ig.conectar("T")
     api = TestClient(pf.app, base_url="http://127.0.0.1")
     v = api.get("/api/videos").json()[0]
-    assert v["pronto"] is False and v["partes_previstas"] == 2 and v["partes_prontas"] == 1
+    assert v["pronto"] is False and v["partes_previstas"] == 3 and v["partes_prontas"] == 1
     r = api.post("/api/ig/agendar", json={"videos": ["longo.mp4"]})
     assert r.status_code == 400 and ig.fila() == []
+
+
+def test_processing_failed_vira_explicacao_e_nao_repete():
+    e = ig._explicar({"debug_info": {"retriable": False, "type": "ProcessingFailedError",
+                                     "message": "Request processing failed"}})
+    assert e.fatal and "Duracao maxima de cada parte" in str(e)
+
+
+def test_parte_de_render_antigo_nao_e_publicada(meta):
+    # agendado como parte 1 de 2; depois renderizado de novo em 3 partes
+    ig.conectar("T")
+    _pronto_em_partes("a.mp4", 2)
+    ig.agendar([{"video": "a.mp4", "parte": 1, "partes": 2, "legenda": "x"}])
+    mf.apagar_saidas(mf.ENTRADA / "a.mp4")
+    _pronto_em_partes("a.mp4", 3)
+    ig.processar_vencidos(datetime.now() + timedelta(days=30))
+    item = ig.fila()[0]
+    assert item["status"] == "erro" and "3 parte" in item["erro"]
+    assert not any("rupload" in c[1] for c in meta.chamadas)
+
+
+def test_tirar_todos_os_pendentes_mantem_publicados(meta):
+    ig.conectar("T")
+    _pronto_em_partes("a.mp4", 1)
+    _pronto_em_partes("b.mp4", 1)
+    ig.agendar([{"video": v, "legenda": "x"} for v in ("a.mp4", "b.mp4")])
+    ig._atualizar(ig.fila()[0]["id"], status="publicado")
+    assert [x["status"] for x in ig.remover_pendentes()] == ["publicado"]
+
+
+def test_padrao_de_parte_e_60s():
+    assert mf._validar({})["parte_max"] == 60
 
 
 def test_legenda_do_post_com_e_sem_marcador():

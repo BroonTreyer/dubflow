@@ -70,8 +70,11 @@ PADRAO = {
     "margem": 60,
     "cantos_video": 0,
     "legendar_padrao": False,   # legenda automatica em quem nao tem escolha propria
-    # Reels por API aceita ate 90s: video mais longo vira Parte 1, Parte 2...
-    "parte_max": 89,
+    # Video mais longo que isso vira Parte 1, Parte 2... O teto pratico do upload
+    # direto do Instagram NAO e o de 90s: medido em 05/10/2026, um trecho real de
+    # 77s volta ProcessingFailedError sempre (a Meta desiste de processar por volta
+    # de 33s de requisicao) e o mesmo trecho com 60s passa em 23s.
+    "parte_max": 60,
     "rotulo_parte": "PARTE {n}",
     "cta_ultima": "SEGUE PRA MAIS FILMES",
     # vale para todo video sem corte proprio (.corte.json)

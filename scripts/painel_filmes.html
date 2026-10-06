@@ -165,7 +165,8 @@
     <div class="check"><input type="checkbox" data-k="legendar_padrao" id="c4"><label for="c4" style="margin:0">Legendar por padrão (fala transcrita e traduzida pra pt-BR)</label></div>
 
     <h2>Partes (Instagram aceita até 90s)</h2>
-    <label>Duração máxima de cada parte <span class="valor" data-v="parte_max"></span></label>
+    <label>Duração máxima de cada parte (s) <span class="valor" data-v="parte_max"></span></label>
+    <p style="margin:0 0 6px;color:var(--sutil);font-size:12px">Acima de ~70s a Meta costuma recusar o envio direto. 60s é seguro.</p>
     <input type="range" min="30" max="90" step="1" data-k="parte_max">
     <label>Selo da parte ({n} = número, {total} = quantas)</label>
     <input type="text" data-k="rotulo_parte">
@@ -371,6 +372,7 @@
         <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
         <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
         <span style="flex:1"></span>
+        <button id="btnIgTirarTodos" class="perigo">Tirar todos os pendentes</button>
         <button id="btnIgReorg" title="Redistribui os pendentes pelos horários configurados, na mesma ordem">Reorganizar horários</button>
         <button id="btnIgLimparHist">Limpar publicados</button>
       </div>
@@ -980,6 +982,12 @@ $("#btnIgAgendarSel").addEventListener("click", () =>
 $("#btnIgAgendarTodos").addEventListener("click", () => {
   const naFila = new Set(igEstado.fila.filter(x => ["pendente", "publicando"].includes(x.status)).map(x => x.video));
   igAgendar(videos.filter(v => v.pronto && !naFila.has(v.nome)).map(v => v.nome));
+});
+$("#btnIgTirarTodos").addEventListener("click", async () => {
+  const n = igEstado.fila.filter(x => ["pendente", "erro"].includes(x.status)).length;
+  if (!n || !confirm(`Tirar ${n} post(s) pendentes/com erro da fila? Os publicados ficam.`)) return;
+  igEstado.fila = (await (await post("/api/ig/remover-pendentes")).json()).fila; igDesenhar();
+  $("#igFilaMsg").textContent = `${n} post(s) tirados da fila.`;
 });
 $("#btnIgReorg").addEventListener("click", async () => {
   igEstado.fila = (await (await post("/api/ig/reorganizar")).json()).fila; igDesenhar();

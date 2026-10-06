@@ -501,6 +501,11 @@ def ig_reorganizar() -> dict:
     return {"fila": ig.reorganizar()}
 
 
+@app.post("/api/ig/remover-pendentes")
+def ig_remover_pendentes() -> dict:
+    return {"fila": ig.remover_pendentes()}
+
+
 @app.post("/api/ig/remover")
 def ig_remover(dados: dict) -> dict:
     return {"fila": ig.remover([str(i) for i in dados.get("ids") or []])}

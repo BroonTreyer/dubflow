@@ -136,6 +136,14 @@ def _conta(ig_id: str | None) -> dict:
 # ------------------------------------------------------------------ Graph API
 
 def _explicar(corpo: dict) -> ErroInstagram:
+    depuracao = corpo.get("debug_info") or {}
+    if depuracao.get("type") == "ProcessingFailedError":
+        # resposta do rupload, sem motivo. O que a provoca na pratica e video longo:
+        # a Meta processa durante o envio e desiste antes de terminar.
+        return ErroInstagram(
+            "A Meta nao terminou de processar o video no envio direto (acontece com "
+            "parte longa). Diminua 'Duracao maxima de cada parte' no molde (60s funciona), "
+            "renderize de novo e agende de novo.", fatal=True)
     erro = corpo.get("error") or {}
     codigo, msg = erro.get("code"), erro.get("message", "") or str(corpo)
     sub = erro.get("error_subcode")
@@ -388,6 +396,14 @@ def remover(ids: list[str]) -> list[dict]:
         return atual
 
 
+def remover_pendentes() -> list[dict]:
+    """Esvazia a fila do que ainda nao saiu (pendentes e com erro); publicados ficam."""
+    with _trava:
+        atual = [x for x in fila() if x["status"] in ("publicado", "publicando")]
+        _gravar(_arq_fila(), atual)
+        return atual
+
+
 def limpar_historico() -> list[dict]:
     with _trava:
         atual = [x for x in fila() if x["status"] not in ("publicado",)]
@@ -433,6 +449,11 @@ def processar_vencidos(agora: datetime | None = None) -> int:
     k = item.get("parte", 1)
     video = saidas[k - 1] if len(saidas) >= k else None
     try:
+        if video is not None and len(saidas) != item.get("partes", 1):
+            raise ErroInstagram(
+                f"o video foi renderizado de novo em {len(saidas)} parte(s) e este post era "
+                f"a parte {k} de {item.get('partes', 1)}: tire da fila e agende de novo",
+                fatal=True)
         if video is None or not video.exists():
             raise ErroInstagram("o video renderizado nao existe mais (apagado ou renderizado "
                                 "de novo com outro numero de partes): agende de novo", fatal=True)
