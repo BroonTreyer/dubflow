@@ -163,6 +163,16 @@ def _n_partes(video: Path | None, molde: dict, corte: dict | None) -> int:
     return len(mf.partes(_duracao(video), corte or mf.corte_de(video, molde), molde["parte_max"]))
 
 
+def _pronto(video: Path, molde: dict) -> bool:
+    """Tem render E no numero de partes que o molde pede hoje.
+
+    Render antigo de 155s inteiro (feito antes da divisao em partes, ou com outro
+    parte_max) NAO esta pronto: precisa ser refeito, e nao pode ir pra fila.
+    """
+    saidas = mf.saidas_de(video)
+    return bool(saidas) and len(saidas) == _n_partes(video, molde, None)
+
+
 def _rotulo_previa(video: Path | None, molde: dict, corte: dict | None) -> str | None:
     """A previa mostra a PARTE 1 quando o video vai ser dividido."""
     return mf.rotulo_parte(molde, 1, _n_partes(video, molde, corte))
@@ -182,8 +192,8 @@ def videos() -> list[dict]:
             "nome": v.name,
             "gancho": proprio,
             "gancho_auto": mf.gancho_de(v, i, molde),
-            "pronto": bool(saidas := mf.saidas_de(v)),
-            "partes_prontas": len(saidas),
+            "pronto": _pronto(v, molde),
+            "partes_prontas": len(mf.saidas_de(v)),
             "partes_previstas": _n_partes(v, molde, None),
             "renderizando": v.name in ativos,
             "corte": mf.corte_de(v, molde),
@@ -388,8 +398,9 @@ def renderizar(dados: dict | None = None) -> dict:
     try:
         escolhidos = {v.name for v in _selecao(dados.get("videos"))}
         refazer = bool(dados.get("refazer"))
+        molde = mf.carregar_molde()
         fila = [(i, v) for i, v in enumerate(mf.listar_videos())
-                if v.name in escolhidos and (refazer or not mf.pronto(v))]
+                if v.name in escolhidos and (refazer or not _pronto(v, molde))]
         simultaneos = max(1, min(MAX_SIMULTANEOS, int(dados.get("simultaneos") or 3)))
     except Exception:
         _trava.release()
@@ -466,9 +477,10 @@ def ig_agendar(dados: dict) -> dict:
     """Agenda os videos PRONTOS pedidos, com a legenda montada pelo modelo."""
     molde, cfg = mf.carregar_molde(), ig.config()
     alvos = [_video(n) for n in dados.get("videos") or []]
-    prontos = [v for v in alvos if mf.pronto(v)]
+    prontos = [v for v in alvos if _pronto(v, molde)]
     if not prontos:
-        raise HTTPException(400, "nenhum dos selecionados esta renderizado")
+        raise HTTPException(400, "nenhum dos selecionados esta renderizado no formato atual "
+                                 "(videos longos precisam ser renderizados de novo em partes)")
     itens = []
     for v in prontos:
         n = len(mf.saidas_de(v))
@@ -482,6 +494,11 @@ def ig_agendar(dados: dict) -> dict:
         raise _erro_ig(exc)
     return {"agendados": len(fila) - antes, "ignorados_sem_render": len(alvos) - len(prontos),
             "fila": fila}
+
+
+@app.post("/api/ig/reorganizar")
+def ig_reorganizar() -> dict:
+    return {"fila": ig.reorganizar()}
 
 
 @app.post("/api/ig/remover")

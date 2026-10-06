@@ -371,6 +371,7 @@
         <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
         <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
         <span style="flex:1"></span>
+        <button id="btnIgReorg" title="Redistribui os pendentes pelos horários configurados, na mesma ordem">Reorganizar horários</button>
         <button id="btnIgLimparHist">Limpar publicados</button>
       </div>
       <div class="info" id="igFilaMsg" style="margin-bottom:8px"></div>
@@ -961,7 +962,7 @@ $("#btnIgSalvarCfg").addEventListener("click", async () => {
     por_dia: $("#igPorDia").value, inicio: $("#igInicio").value,
     intervalo_min: $("#igIntervalo").value})).json();
   igPreencherCfg();
-  $("#igCfgMsg").textContent = "Salvo. Vale para os próximos agendamentos.";
+  $("#igCfgMsg").textContent = "Salvo. Para aplicar na fila já montada, use “Reorganizar horários”.";
 });
 
 async function igAgendar(nomes) {
@@ -979,6 +980,10 @@ $("#btnIgAgendarSel").addEventListener("click", () =>
 $("#btnIgAgendarTodos").addEventListener("click", () => {
   const naFila = new Set(igEstado.fila.filter(x => ["pendente", "publicando"].includes(x.status)).map(x => x.video));
   igAgendar(videos.filter(v => v.pronto && !naFila.has(v.nome)).map(v => v.nome));
+});
+$("#btnIgReorg").addEventListener("click", async () => {
+  igEstado.fila = (await (await post("/api/ig/reorganizar")).json()).fila; igDesenhar();
+  $("#igFilaMsg").textContent = "Horários redistribuídos pela configuração atual.";
 });
 $("#btnIgLimparHist").addEventListener("click", async () => {
   igEstado.fila = (await (await post("/api/ig/limpar-historico")).json()).fila; igDesenhar();

@@ -94,9 +94,10 @@ def _pronto_em_partes(nome, n):
         mf.saida_parte(mf.ENTRADA / nome, k, n).write_bytes(b"x" * 100)
 
 
-def test_agenda_uma_publicacao_por_parte_em_ordem(meta):
+def test_agenda_uma_publicacao_por_parte_em_ordem(meta, monkeypatch):
     ig.conectar("T")
     _pronto_em_partes("a.mp4", 2)
+    monkeypatch.setattr(pf, "_duracao", lambda v: 150.0)   # 150s = 2 partes de 75s
     api = TestClient(pf.app, base_url="http://127.0.0.1")
     r = api.post("/api/ig/agendar", json={"videos": ["a.mp4"]}).json()
     assert r["agendados"] == 2
@@ -128,6 +129,46 @@ def test_video_acima_de_90s_e_barrado_antes_do_upload(meta, monkeypatch):
     with pytest.raises(ig.ErroInstagram, match="154s"):
         ig.publicar(mf.saidas_de(mf.ENTRADA / "a.mp4")[0], "x")
     assert not any("rupload" in c[1] for c in meta.chamadas)
+
+
+def test_horarios_de_quem_posta_a_noite_atravessam_a_meia_noite():
+    cfg = {**ig.CONFIG_PADRAO, "por_dia": 5, "inicio": "22:35", "intervalo_min": 180}
+    h = ig.horarios(6, cfg, depois_de=datetime(2026, 10, 6, 12, 0))
+    assert [x.strftime("%d %H:%M") for x in h] == \
+        ["06 22:35", "07 01:35", "07 04:35", "07 07:35", "07 10:35", "07 22:35"]
+    # intervalo que estouraria 24h nao invade a janela seguinte
+    largo = {**cfg, "por_dia": 10, "intervalo_min": 300}
+    h = ig.horarios(6, largo, depois_de=datetime(2026, 10, 6, 12, 0))
+    assert h[5] == datetime(2026, 10, 7, 22, 35)
+
+
+def test_reorganizar_reespaca_mantendo_a_ordem(meta):
+    ig.conectar("T")
+    for n in ("a.mp4", "b.mp4"):
+        _pronto_em_partes(n, 2)
+    ig.agendar([{"video": v, "parte": k, "partes": 2, "legenda": "x"}
+                for v in ("a.mp4", "b.mp4") for k in (1, 2)])
+    for i, x in enumerate(sorted(ig.fila(), key=lambda x: (x["video"], x["parte"]))):
+        ig._atualizar(x["id"], quando=f"2030-01-{10 + i:02d}T22:35")   # 1 por dia, como o bug
+    ig.salvar_config({"por_dia": 5, "inicio": "22:35", "intervalo_min": 180})
+    fila = sorted(ig.reorganizar(), key=lambda x: x["quando"])
+    assert [(x["video"], x["parte"]) for x in fila] == \
+        [("a.mp4", 1), ("a.mp4", 2), ("b.mp4", 1), ("b.mp4", 2)]
+    horas = [datetime.fromisoformat(x["quando"]) for x in fila]
+    assert all(b - a == timedelta(hours=3) for a, b in zip(horas, horas[1:]))
+
+
+def test_render_antigo_longo_nao_conta_como_pronto(meta, monkeypatch):
+    # 155s renderizado inteiro (antes da divisao): pendente, e nao entra na fila
+    (mf.ENTRADA / "longo.mp4").write_bytes(b"original")
+    mf.saida_de(mf.ENTRADA / "longo.mp4").write_bytes(b"render antigo inteiro")
+    monkeypatch.setattr(pf, "_duracao", lambda v: 155.0)
+    ig.conectar("T")
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    v = api.get("/api/videos").json()[0]
+    assert v["pronto"] is False and v["partes_previstas"] == 2 and v["partes_prontas"] == 1
+    r = api.post("/api/ig/agendar", json={"videos": ["longo.mp4"]})
+    assert r.status_code == 400 and ig.fila() == []
 
 
 def test_legenda_do_post_com_e_sem_marcador():

@@ -313,8 +313,13 @@ def montar_legenda(gancho: str, cfg: dict | None = None, parte: int = 1, total: 
 
 def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,
              ocupados: list[datetime] | None = None) -> list[datetime]:
-    """Proximos horarios livres: `por_dia` por dia a partir de `inicio`, a cada
-    `intervalo_min`, pulando os que ja passaram e os ja ocupados na fila."""
+    """Proximos horarios livres: `por_dia` a cada janela de 24h que comeca em `inicio`,
+    um a cada `intervalo_min`, pulando os que ja passaram e os ja ocupados.
+
+    A janela e de 24h e nao o dia do calendario: com inicio 22:35 e intervalo de 3h
+    os horarios 01:35, 04:35... sao do mesmo "dia" de postagem. (Cortar na
+    meia-noite deixava so 1 post por dia em quem posta a noite.)
+    """
     agora = depois_de or datetime.now()
     h, m = map(int, cfg["inicio"].split(":"))
     ocupados_set = {o.replace(second=0, microsecond=0) for o in (ocupados or [])}
@@ -322,8 +327,8 @@ def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,
     while len(saida) < quantidade:
         for i in range(cfg["por_dia"]):
             t = dia + timedelta(minutes=i * cfg["intervalo_min"])
-            if t.date() != dia.date():
-                break  # intervalo grande demais: o resto nao cabe no dia
+            if t >= dia + timedelta(days=1):
+                break  # intervalo grande demais: o resto invadiria a janela seguinte
             if t > agora and t not in ocupados_set:
                 saida.append(t)
                 if len(saida) == quantidade:
@@ -351,6 +356,26 @@ def agendar(itens: list[dict], ig_id: str | None = None) -> list[dict]:
                           "quando": quando.isoformat(timespec="minutes"),
                           "status": "pendente", "tentativas": 0,
                           "erro": None, "permalink": None})
+        _gravar(_arq_fila(), atual)
+        return atual
+
+
+def reorganizar(ig_id: str | None = None) -> list[dict]:
+    """Redistribui os horarios dos pendentes pela config atual, mantendo a ordem.
+
+    Para quando a config mudou (ou a fila foi montada com regra errada). Partes do
+    mesmo video continuam em sequencia porque a ordem e preservada.
+    """
+    with _trava:
+        cfg, atual = config(), fila()
+        contas = {ig_id} if ig_id else {x["ig_id"] for x in atual}
+        for conta in contas:
+            pend = sorted((x for x in atual if x["ig_id"] == conta and x["status"] == "pendente"),
+                          key=lambda x: (x["quando"], x["video"], x.get("parte", 1)))
+            ocupados = [datetime.fromisoformat(x["quando"]) for x in atual
+                        if x["ig_id"] == conta and x["status"] == "publicando"]
+            for item, quando in zip(pend, horarios(len(pend), cfg, ocupados=ocupados)):
+                item["quando"] = quando.isoformat(timespec="minutes")
         _gravar(_arq_fila(), atual)
         return atual
 
