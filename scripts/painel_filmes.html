@@ -857,12 +857,23 @@ async function igCarregar() {
   igDesenhar();
 }
 
+function avisoToken(expira) {
+  if (expira === 0) return " · token permanente";
+  if (!expira) return "";
+  const horas = (expira * 1000 - Date.now()) / 36e5;
+  if (horas <= 0) return ' · <b style="color:var(--acento)">TOKEN VENCIDO: conecte de novo</b>';
+  const quando = new Date(expira * 1000).toLocaleString("pt-BR", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
+  return horas < 72
+    ? ` · <b style="color:var(--acento)">token vence ${quando}: conecte de novo COM o ID e a chave do app</b>`
+    : ` · token vence ${quando}`;
+}
+
 function igDesenhar() {
   const c = igEstado.config, f = igEstado.fila;
   $("#igContas").innerHTML = c.contas.length ? c.contas.map(x => `
     <div class="conta">
       <input type="radio" name="igAtiva" value="${esc(x.ig_id)}" ${x.ig_id === c.ativa ? "checked" : ""}>
-      <b>@${esc(x.username)}</b><span class="info">${esc(x.pagina)}</span>
+      <b>@${esc(x.username)}</b><span class="info">${esc(x.pagina)}${avisoToken(x.expira)}</span>
       <button data-sair="${esc(x.ig_id)}" style="padding:2px 8px;font-size:12px">Remover</button>
     </div>`).join("") : '<div class="info">Nenhuma conta conectada.</div>';
   $("#igConectarBox").open = !c.contas.length;
@@ -870,7 +881,13 @@ function igDesenhar() {
   const pend = f.filter(x => x.status === "pendente").length;
   const pub = f.filter(x => x.status === "publicado").length;
   const err = f.filter(x => x.status === "erro").length;
+  const velhos = f.filter(x => x.desatualizado).length;
   $("#igResumo").textContent = `· ${pend} na fila · ${pub} publicados` + (err ? ` · ${err} com erro` : "");
+  $("#igFilaMsg").innerHTML = velhos
+    ? `<b style="color:var(--acento)">⚠ ${velhos} post(s) da fila são de renders antigos (partes longas demais).</b>
+       Clique em “Tirar todos os pendentes”, depois em “Renderizar pendentes” na lista de vídeos,
+       e volte aqui em “Agendar todos os prontos”.`
+    : $("#igFilaMsg").innerHTML.startsWith("<b") ? "" : $("#igFilaMsg").innerHTML;
 
   const ordem = {publicando: 0, erro: 1, pendente: 2, publicado: 3};
   const lista = [...f].sort((a, b) => (ordem[a.status] - ordem[b.status]) ||
@@ -884,6 +901,7 @@ function igDesenhar() {
       <td>@${esc(x.username)}</td>
       <td><span class="tag ${x.status === "publicado" ? "ok" : x.status === "erro" ? "erro" : x.status === "publicando" ? "rodando" : ""}"
             title="${esc(x.erro || "")}">${x.status}</span>
+          ${x.desatualizado ? '<div><span class="tag erro" title="O render deste vídeo não bate mais com este post">desatualizado</span></div>' : ""}
           ${x.erro && x.status !== "publicado" ? `<div class="info" style="font-size:11px;margin-top:4px">${esc(x.erro)}</div>` : ""}
           ${x.permalink ? `<div><a href="${esc(x.permalink)}" target="_blank" rel="noopener">ver post</a></div>` : ""}</td>
       <td>${x.status === "pendente"

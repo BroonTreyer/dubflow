@@ -437,7 +437,20 @@ def _erro_ig(exc: Exception) -> HTTPException:
 
 @app.get("/api/ig")
 def ig_estado() -> dict:
-    return {"config": ig.config_publica(), "fila": ig.fila()}
+    """Fila com `desatualizado` em cada pendente cujo render nao bate mais: o video foi
+    (ou precisa ser) renderizado de novo em outro numero de partes."""
+    molde = mf.carregar_molde()
+    fila = ig.fila()
+    estado: dict[str, tuple[bool, int]] = {}
+    for x in fila:
+        if x["status"] not in ("pendente", "erro"):
+            continue
+        if x["video"] not in estado:
+            v = mf.ENTRADA / x["video"]
+            estado[x["video"]] = (v.exists() and _pronto(v, molde), len(mf.saidas_de(v)))
+        ok, n = estado[x["video"]]
+        x["desatualizado"] = not ok or n != x.get("partes", 1)
+    return {"config": ig.config_publica(), "fila": fila}
 
 
 @app.post("/api/ig/conectar")

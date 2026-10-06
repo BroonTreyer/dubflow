@@ -188,7 +188,8 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
         "limit": 100, "access_token": token_usuario}, timeout=30)).get("data", [])
     contas = [{"ig_id": p["instagram_business_account"]["id"],
                "username": p["instagram_business_account"].get("username", ""),
-               "pagina": p.get("name", ""), "token": p["access_token"]}
+               "pagina": p.get("name", ""), "token": p["access_token"],
+               "expira": _expiracao(p["access_token"])}
               for p in paginas if p.get("instagram_business_account")]
     if not contas:
         raise ErroInstagram(_diagnostico(token_usuario, paginas), fatal=True)
@@ -201,6 +202,16 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
         _gravar(_arq_config(), c)
     log.info("instagram conectado: %s", ", ".join("@" + x["username"] for x in contas))
     return config_publica()
+
+
+def _expiracao(token: str) -> int | None:
+    """Epoch em que o token vence; 0 = nao vence; None = nao deu para saber."""
+    try:
+        dados = _json(requests.get(f"{GRAPH}/debug_token", params={
+            "input_token": token, "access_token": token}, timeout=30)).get("data", {})
+        return int(dados.get("expires_at") or 0)
+    except (ErroInstagram, requests.RequestException, ValueError):
+        return None
 
 
 PERMISSOES = ("instagram_basic", "instagram_content_publish", "pages_show_list",
