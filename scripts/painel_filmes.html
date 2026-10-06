@@ -164,6 +164,14 @@
     <div class="check"><input type="checkbox" data-k="caixa_alta" id="c3"><label for="c3" style="margin:0">Gancho em CAIXA ALTA</label></div>
     <div class="check"><input type="checkbox" data-k="legendar_padrao" id="c4"><label for="c4" style="margin:0">Legendar por padrão (fala transcrita e traduzida pra pt-BR)</label></div>
 
+    <h2>Partes (Instagram aceita até 90s)</h2>
+    <label>Duração máxima de cada parte <span class="valor" data-v="parte_max"></span></label>
+    <input type="range" min="30" max="90" step="1" data-k="parte_max">
+    <label>Selo da parte ({n} = número, {total} = quantas)</label>
+    <input type="text" data-k="rotulo_parte">
+    <label>Botão da última parte</label>
+    <input type="text" data-k="cta_ultima">
+
     <h2>Fonte e tamanhos</h2>
     <label>Fonte</label>
     <select data-k="fonte" id="fonte"></select>
@@ -343,7 +351,7 @@
 
       <div class="card" style="margin-top:16px">
         <h2>Legenda do post</h2>
-        <label>Modelo ({gancho} vira o gancho de cada vídeo)</label>
+        <label>Modelo ({gancho} = gancho do vídeo, {parte} = “Parte 1/2”)</label>
         <textarea id="igModelo"></textarea>
         <label>Hashtags</label>
         <input type="text" id="igHashtags">
@@ -482,12 +490,16 @@ function desenharLista() {
           <span class="nome" title="${esc(v.nome)}">${esc(v.nome)}</span>
           ${v.corte_proprio ? '<span class="tag" title="Corte próprio, ignora o padrão">✂ próprio</span>' : ""}
           ${v.legendar ? `<span class="tag" title="${v.legenda_propria ? "Legenda ligada neste vídeo" : "Legenda pelo padrão do molde"}">CC</span>` : ""}
+          ${v.partes_previstas > 1 ? `<span class="tag" title="Passa do limite de ${molde.parte_max}s: vira ${v.partes_previstas} posts">${v.partes_previstas} partes</span>` : ""}
           <span class="status">${tagStatus(v)}</span>
         </div>
         <input type="text" class="gancho" value="${esc(v.gancho)}" placeholder="${esc(v.gancho_auto)}">
         <div class="acoes">
           <button data-a="ver">Ver / cortar</button>
-          ${v.pronto ? '<button data-a="assistir">▶ Assistir</button>' : ""}
+          ${v.pronto ? (v.partes_prontas > 1
+              ? Array.from({length: v.partes_prontas}, (_, i) =>
+                  `<button data-a="assistir" data-parte="${i + 1}">▶ Parte ${i + 1}</button>`).join("")
+              : '<button data-a="assistir">▶ Assistir</button>') : ""}
         </div>
       </div>`).join("");
   }
@@ -528,7 +540,8 @@ $("#lista").addEventListener("click", async e => {
     abrirCorte(videos.find(v => v.nome === nome));
     atualizarPrevia();
   } else if (b.dataset.a === "assistir") {
-    $("#playerVideo").src = "/saida/" + encodeURIComponent(nome) + "?t=" + Date.now();
+    $("#playerVideo").src = "/saida/" + encodeURIComponent(nome) +
+      "?parte=" + (b.dataset.parte || 1) + "&t=" + Date.now();
     $("#player").showModal();
   }
 });
@@ -863,7 +876,8 @@ function igDesenhar() {
       <th>Quando</th><th>Vídeo</th><th>Conta</th><th>Status</th><th>Legenda</th><th></th></tr></thead><tbody>` +
     lista.map(x => `<tr data-id="${esc(x.id)}">
       <td>${esc(x.quando.replace("T", " "))}</td>
-      <td><div class="nome" title="${esc(x.video)}">${esc(x.video)}</div></td>
+      <td><div class="nome" title="${esc(x.video)}">${esc(x.video)}</div>
+          ${(x.partes || 1) > 1 ? `<span class="tag">Parte ${x.parte}/${x.partes}</span>` : ""}</td>
       <td>@${esc(x.username)}</td>
       <td><span class="tag ${x.status === "publicado" ? "ok" : x.status === "erro" ? "erro" : x.status === "publicando" ? "rodando" : ""}"
             title="${esc(x.erro || "")}">${x.status}</span>

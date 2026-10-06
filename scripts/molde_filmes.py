@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import zlib
 import subprocess
@@ -69,6 +70,10 @@ PADRAO = {
     "margem": 60,
     "cantos_video": 0,
     "legendar_padrao": False,   # legenda automatica em quem nao tem escolha propria
+    # Reels por API aceita ate 90s: video mais longo vira Parte 1, Parte 2...
+    "parte_max": 89,
+    "rotulo_parte": "PARTE {n}",
+    "cta_ultima": "SEGUE PRA MAIS FILMES",
     # vale para todo video sem corte proprio (.corte.json)
     "corte_padrao": {"topo": 0.0, "base": 0.0, "esq": 0.0, "dir": 0.0,
                      "inicio": 0.0, "fim": 0.0},
@@ -92,7 +97,8 @@ def carregar_molde() -> dict:
 
 
 LIMITES = {"tamanho_perfil": (20, 120), "tamanho_gancho_max": (40, 160),
-           "tamanho_cta": (20, 90), "margem": (0, 300), "cantos_video": (0, 120)}
+           "tamanho_cta": (20, 90), "margem": (0, 300), "cantos_video": (0, 120),
+           "parte_max": (10, 90)}
 
 
 def _validar(molde: dict) -> dict:
@@ -230,8 +236,8 @@ def duracao(video: Path) -> float:
         return 0.0
 
 
-def montar_fundo(molde: dict, gancho: str, video_wh: tuple[int, int]
-                 ) -> tuple[Image.Image, tuple[int, int, int, int]]:
+def montar_fundo(molde: dict, gancho: str, video_wh: tuple[int, int],
+                 parte: str | None = None) -> tuple[Image.Image, tuple[int, int, int, int]]:
     """Desenha o fundo e devolve (imagem, (x, y, w, h) onde o video entra).
 
     Gancho + video + CTA formam um bloco centralizado na vertical, entao um
@@ -264,6 +270,11 @@ def montar_fundo(molde: dict, gancho: str, video_wh: tuple[int, int]
     altura_linha = int(f_gancho.size * 1.15)
     h_gancho = altura_linha * len(linhas)
 
+    # selo da parte ("PARTE 2"): pilula pequena logo acima do gancho
+    f_parte = ImageFont.truetype(fonte_arq, max(26, int(f_gancho.size * 0.5))) if parte else None
+    selo_h = int(f_parte.size * 1.7) if parte else 0
+    h_gancho += selo_h + 22 if parte else 0
+
     respiro = 40
     mostrar_cta = molde["mostrar_cta"] and molde["cta"].strip()
     # o botao tem 2.7x a fonte de folga lateral; a fonte encolhe ate tudo caber
@@ -282,6 +293,14 @@ def montar_fundo(molde: dict, gancho: str, video_wh: tuple[int, int]
     bloco = h_gancho + respiro + h + (respiro + cta_h if mostrar_cta else 0)
     y = teto + max(0, (ALTURA - 80 - teto - bloco) // 2)
 
+    if parte:
+        sw = draw.textlength(parte, font=f_parte) + 1.6 * f_parte.size
+        sx = (LARGURA - sw) / 2
+        draw.rounded_rectangle([sx, y, sx + sw, y + selo_h], radius=selo_h // 2,
+                               fill=_cor(molde["cor_cta"]))
+        draw.text((LARGURA / 2, y + selo_h / 2), parte, font=f_parte,
+                  fill=_cor(molde["cor_texto_cta"]), anchor="mm")
+        y += selo_h + 22
     for linha in linhas:
         draw.text((LARGURA / 2, y), linha, font=f_gancho,
                   fill=_cor(molde["cor_texto"]), anchor="mt")
@@ -374,11 +393,11 @@ def area_corte(wh: tuple[int, int], corte: dict) -> tuple[int, int, int, int]:
 
 
 def previa(molde: dict, gancho: str, quadro: Image.Image,
-           corte: dict | None = None) -> Image.Image:
+           corte: dict | None = None, parte: str | None = None) -> Image.Image:
     """O frame final de um quadro do video, sem passar pelo ffmpeg."""
     cx, cy, cw, ch = area_corte(quadro.size, normalizar_corte(corte))
     quadro = quadro.crop((cx, cy, cx + cw, cy + ch))
-    img, (x, y, w, h) = montar_fundo(molde, gancho, quadro.size)
+    img, (x, y, w, h) = montar_fundo(molde, gancho, quadro.size, parte)
     quadro = quadro.convert("RGB").resize((w, h))
     raio = int(molde["cantos_video"])
     img.paste(quadro, (x, y), _mascara_cantos(w, h, raio) if raio else None)
@@ -388,7 +407,7 @@ def previa(molde: dict, gancho: str, quadro: Image.Image,
 def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
                corte: dict | None = None,
                progresso: Callable[[float], None] | None = None,
-               legenda: list[dict] | None = None) -> None:
+               legenda: list[dict] | None = None, parte: str | None = None) -> None:
     """Renderiza em um .parcial e so renomeia no fim: arquivo pela metade nunca
     aparece como pronto. `progresso` recebe de 0 a 1 enquanto o ffmpeg anda.
 
@@ -409,7 +428,7 @@ def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
         tempo += ["-t", f"{corte['fim'] - corte['inicio']:.2f}"]
     with tempfile.TemporaryDirectory() as tmp:
         fundo_png = Path(tmp) / "fundo.png"
-        fundo, (x, y, w, h) = montar_fundo(molde, gancho, (cw, ch))
+        fundo, (x, y, w, h) = montar_fundo(molde, gancho, (cw, ch), parte)
         fundo.save(fundo_png)
         entradas = ["-loop", "1", "-i", str(fundo_png), *tempo, "-i", str(video)]
         raio = int(molde["cantos_video"])
@@ -457,6 +476,112 @@ def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
         parcial.replace(saida)
 
 
+def partes(dur_total: float, corte: dict, parte_max: float) -> list[tuple[float, float]]:
+    """Trechos (inicio, fim) de ate `parte_max` segundos, em tamanhos IGUAIS.
+
+    Iguais e nao "89 + 89 + sobra": 150s viram 2 x 75s, nunca 89s + 61s. Um trecho
+    so devolve o corte como veio (fim 0 = ate o fim do video).
+    """
+    corte = normalizar_corte(corte)
+    ini = corte["inicio"]
+    fim = corte["fim"] if corte["fim"] > ini else dur_total
+    if dur_total:
+        fim = min(fim, dur_total)
+    total = fim - ini
+    if total <= parte_max or total <= 0:
+        return [(ini, corte["fim"])]
+    n = math.ceil(total / parte_max)
+    passo = total / n
+    return [(round(ini + k * passo, 3), round(ini + (k + 1) * passo, 3)) for k in range(n)]
+
+
+def rotulo_parte(molde: dict, k: int, n: int) -> str | None:
+    if n <= 1 or not molde["rotulo_parte"].strip():
+        return None
+    return molde["rotulo_parte"].replace("{n}", str(k)).replace("{total}", str(n))
+
+
+def _fatiar(falas: list[dict], desloc: float, dur: float) -> list[dict]:
+    """Falas de um trecho com o tempo zerado no comeco dele."""
+    saida = []
+    for f in falas:
+        ini, fim = f["start"] - desloc, f["end"] - desloc
+        if fim <= 0 or ini >= dur:
+            continue
+        g = {**f, "start": max(0.0, ini), "end": min(dur, fim)}
+        if f.get("words"):
+            g["words"] = [{**w, "start": w["start"] - desloc, "end": w["end"] - desloc}
+                          for w in f["words"]
+                          if w["end"] - desloc > 0 and w["start"] - desloc < dur]
+        saida.append(g)
+    return saida
+
+
+def saida_parte(video: Path, k: int, n: int) -> Path:
+    """Video de uma parte so continua com o nome antigo (<stem>_molde.mp4)."""
+    return saida_de(video) if n <= 1 else SAIDA / f"{video.stem}_molde_p{k}.mp4"
+
+
+def saidas_de(video: Path) -> list[Path]:
+    """Renders prontos do video, em ordem de parte. Vazio = pendente."""
+    unica = saida_de(video)
+    if unica.exists():
+        return [unica]
+    prefixo = f"{video.stem}_molde_p"
+    achados = []
+    if SAIDA.exists():
+        for f in SAIDA.iterdir():  # iterdir e nao glob: nome de video pode ter [ ] * ?
+            if f.name.startswith(prefixo) and f.name.endswith(".mp4") \
+                    and not f.name.endswith(".parcial.mp4"):
+                meio = f.name[len(prefixo):-4]
+                if meio.isdigit():
+                    achados.append((int(meio), f))
+    return [f for _, f in sorted(achados)]
+
+
+def pronto(video: Path) -> bool:
+    return bool(saidas_de(video))
+
+
+def apagar_saidas(video: Path) -> int:
+    alvos = saidas_de(video)
+    for f in alvos:
+        f.unlink(missing_ok=True)
+    return len(alvos)
+
+
+def renderizar_video(video: Path, molde: dict, gancho: str, corte: dict | None = None,
+                     progresso: Callable[[float], None] | None = None,
+                     legenda: list[dict] | None = None) -> list[Path]:
+    """Renderiza o video inteiro: uma saida, ou uma por parte se passar de parte_max.
+
+    Falhou uma parte = apaga as que ja sairam: video pela metade nao fica "pronto".
+    """
+    corte = normalizar_corte(corte)
+    trechos = partes(duracao(video), corte, molde["parte_max"])
+    n = len(trechos)
+    apagar_saidas(video)  # sobra de um render com outro numero de partes
+    feitos: list[Path] = []
+    try:
+        for k, (a, b) in enumerate(trechos, start=1):
+            m = molde
+            if n > 1 and k == n and molde["cta_ultima"].strip():
+                m = {**molde, "cta": molde["cta_ultima"]}
+            falas = legenda
+            if legenda and n > 1:
+                falas = _fatiar(legenda, a - corte["inicio"], b - a)
+            destino = saida_parte(video, k, n)
+            renderizar(video, destino, m, gancho, {**corte, "inicio": a, "fim": b},
+                       progresso=(lambda f, k=k: progresso((k - 1 + f) / n)) if progresso else None,
+                       legenda=falas, parte=rotulo_parte(molde, k, n))
+            feitos.append(destino)
+    except BaseException:
+        for f in feitos:
+            f.unlink(missing_ok=True)
+        raise
+    return feitos
+
+
 def listar_videos(entrada: Path | None = None) -> list[Path]:
     entrada = entrada or ENTRADA
     entrada.mkdir(parents=True, exist_ok=True)
@@ -493,6 +618,8 @@ def main() -> None:
     molde = carregar_molde()
     args.entrada = args.entrada or ENTRADA
     args.saida = args.saida or SAIDA
+    if args.saida != SAIDA:  # saidas_de/partes usam a pasta do modulo
+        globals()["SAIDA"] = args.saida
     args.saida.mkdir(parents=True, exist_ok=True)
     videos = listar_videos(args.entrada)
     if not videos:
@@ -500,14 +627,13 @@ def main() -> None:
         return
 
     for i, video in enumerate(videos):
-        destino = saida_de(video, args.saida)
-        if destino.exists():
+        if pronto(video):
             print(f"pulando (ja feito): {video.name}")
             continue
         gancho = args.gancho or gancho_de(video, i, molde)
         print(f"[{i + 1}/{len(videos)}] {video.name} -> {gancho}")
         try:
-            renderizar(video, destino, molde, gancho, corte_de(video, molde))
+            renderizar_video(video, molde, gancho, corte_de(video, molde))
         except subprocess.CalledProcessError as exc:
             print(f"  falhou: {exc}")
 

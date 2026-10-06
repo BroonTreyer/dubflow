@@ -138,7 +138,7 @@ def gravar_molde(molde: dict) -> dict:
             raise HTTPException(409, "espere o render terminar para mudar a legenda padrao")
         for v in mf.listar_videos():
             if not lf.tem_escolha_propria(v):
-                mf.saida_de(v).unlink(missing_ok=True)
+                mf.apagar_saidas(v)
     return novo
 
 
@@ -151,10 +151,21 @@ def gerar_previa(dados: dict) -> Response:
         corte = dados["corte"]
     else:
         corte = mf.corte_de(video, molde) if video else molde["corte_padrao"]
-    img = mf.previa(molde, gancho, _quadro(video), corte)
+    img = mf.previa(molde, gancho, _quadro(video), corte, _rotulo_previa(video, molde, corte))
     buf = io.BytesIO()
     img.resize((540, 960)).save(buf, "JPEG", quality=88)
     return Response(buf.getvalue(), media_type="image/jpeg")
+
+
+def _n_partes(video: Path | None, molde: dict, corte: dict | None) -> int:
+    if video is None:
+        return 1
+    return len(mf.partes(_duracao(video), corte or mf.corte_de(video, molde), molde["parte_max"]))
+
+
+def _rotulo_previa(video: Path | None, molde: dict, corte: dict | None) -> str | None:
+    """A previa mostra a PARTE 1 quando o video vai ser dividido."""
+    return mf.rotulo_parte(molde, 1, _n_partes(video, molde, corte))
 
 
 # ---------------------------------------------------------------- videos
@@ -171,7 +182,9 @@ def videos() -> list[dict]:
             "nome": v.name,
             "gancho": proprio,
             "gancho_auto": mf.gancho_de(v, i, molde),
-            "pronto": mf.saida_de(v).exists(),
+            "pronto": bool(saidas := mf.saidas_de(v)),
+            "partes_prontas": len(saidas),
+            "partes_previstas": _n_partes(v, molde, None),
             "renderizando": v.name in ativos,
             "corte": mf.corte_de(v, molde),
             "corte_proprio": mf.tem_corte_proprio(v),
@@ -204,7 +217,8 @@ def miniatura(nome: str, topo: float = 0, base: float = 0, esq: float = 0,
     video = _video(nome)
     molde = mf.carregar_molde()
     corte = {**mf.corte_de(video, molde), "topo": topo, "base": base, "esq": esq, "dir": dir}
-    img = mf.previa(molde, mf.gancho_de(video, None, molde), _quadro(video), corte)
+    img = mf.previa(molde, mf.gancho_de(video, None, molde), _quadro(video), corte,
+                    _rotulo_previa(video, molde, corte))
     buf = io.BytesIO()
     img.resize((270, 480)).save(buf, "JPEG", quality=80)
     return Response(buf.getvalue(), media_type="image/jpeg")
@@ -220,7 +234,7 @@ def gravar_gancho(dados: dict) -> dict:
         sidecar.write_text(texto, encoding="utf-8")
     else:
         sidecar.unlink(missing_ok=True)
-    mf.saida_de(video).unlink(missing_ok=True)
+    mf.apagar_saidas(video)
     return {"ok": True}
 
 
@@ -240,7 +254,7 @@ async def upload(arquivos: list[UploadFile]) -> dict:
             while bloco := await arq.read(1 << 20):
                 f.write(bloco)
         temporario.replace(destino)
-        mf.saida_de(destino).unlink(missing_ok=True)  # render do arquivo antigo de mesmo nome
+        mf.apagar_saidas(destino)  # render do arquivo antigo de mesmo nome
         salvos.append(destino.name)
     return {"salvos": salvos}
 
@@ -258,11 +272,11 @@ def _nome_livre(destino: Path) -> Path:
 
 
 @app.get("/saida/{nome}")
-def baixar_saida(nome: str) -> FileResponse:
-    alvo = mf.saida_de(_video(nome))
-    if not alvo.exists():
+def baixar_saida(nome: str, parte: int = 1) -> FileResponse:
+    saidas = mf.saidas_de(_video(nome))
+    if not 1 <= parte <= len(saidas):
         raise HTTPException(404, "ainda nao renderizado")
-    return FileResponse(alvo, media_type="video/mp4")
+    return FileResponse(saidas[parte - 1], media_type="video/mp4")
 
 
 # ---------------------------------------------------------------- corte
@@ -282,7 +296,7 @@ def gravar_corte(dados: dict) -> dict:
     corte = None
     for v in alvos:
         corte = mf.salvar_corte(v, dados.get("corte"))
-        mf.saida_de(v).unlink(missing_ok=True)  # render antigo ficou desatualizado
+        mf.apagar_saidas(v)  # render antigo ficou desatualizado
     return {"corte": corte, "alterados": len(alvos)}
 
 
@@ -301,7 +315,7 @@ def gravar_legenda(dados: dict) -> dict:
         antes = lf.quer_legenda(v, molde)
         lf.escolher(v, None if escolha is None else bool(escolha))
         if lf.quer_legenda(v, molde) != antes:
-            mf.saida_de(v).unlink(missing_ok=True)  # render antigo ficou desatualizado
+            mf.apagar_saidas(v)  # render antigo ficou desatualizado
             mudaram += 1
     return {"alterados": len(alvos), "renders_apagados": mudaram}
 
@@ -316,8 +330,7 @@ def gravar_corte_padrao(dados: dict) -> dict:
     molde = mf.salvar_molde(molde)
     afetados = 0
     for v in mf.listar_videos():
-        if not mf.tem_corte_proprio(v) and mf.saida_de(v).exists():
-            mf.saida_de(v).unlink()
+        if not mf.tem_corte_proprio(v) and mf.apagar_saidas(v):
             afetados += 1
     return {"corte_padrao": molde["corte_padrao"], "renders_apagados": afetados}
 
@@ -337,9 +350,10 @@ def _render_um(i: int, v: Path, molde: dict) -> None:
             _status["ativos"][v.name] = "legendando"
             falas = lf.segmentos(v, corte["inicio"], corte["fim"])
             _status["ativos"][v.name] = 0
-        mf.renderizar(v, mf.saida_de(v), molde, mf.gancho_de(v, i, molde), corte,
-                      progresso=lambda f: _status["ativos"].__setitem__(v.name, round(f * 100)),
-                      legenda=falas)
+        mf.renderizar_video(
+            v, molde, mf.gancho_de(v, i, molde), corte,
+            progresso=lambda f: _status["ativos"].__setitem__(v.name, round(f * 100)),
+            legenda=falas)
     except subprocess.CalledProcessError as exc:
         _status["erros"].append(f"{v.name}: {(exc.stderr or str(exc)).strip()[-300:]}")
         log.error("render falhou: %s: %s", v.name, exc.stderr)
@@ -375,7 +389,7 @@ def renderizar(dados: dict | None = None) -> dict:
         escolhidos = {v.name for v in _selecao(dados.get("videos"))}
         refazer = bool(dados.get("refazer"))
         fila = [(i, v) for i, v in enumerate(mf.listar_videos())
-                if v.name in escolhidos and (refazer or not mf.saida_de(v).exists())]
+                if v.name in escolhidos and (refazer or not mf.pronto(v))]
         simultaneos = max(1, min(MAX_SIMULTANEOS, int(dados.get("simultaneos") or 3)))
     except Exception:
         _trava.release()
@@ -452,11 +466,15 @@ def ig_agendar(dados: dict) -> dict:
     """Agenda os videos PRONTOS pedidos, com a legenda montada pelo modelo."""
     molde, cfg = mf.carregar_molde(), ig.config()
     alvos = [_video(n) for n in dados.get("videos") or []]
-    prontos = [v for v in alvos if mf.saida_de(v).exists()]
+    prontos = [v for v in alvos if mf.pronto(v)]
     if not prontos:
         raise HTTPException(400, "nenhum dos selecionados esta renderizado")
-    itens = [{"video": v.name,
-              "legenda": ig.montar_legenda(mf.gancho_de(v, None, molde), cfg)} for v in prontos]
+    itens = []
+    for v in prontos:
+        n = len(mf.saidas_de(v))
+        gancho = mf.gancho_de(v, None, molde)
+        itens += [{"video": v.name, "parte": k, "partes": n,
+                   "legenda": ig.montar_legenda(gancho, cfg, k, n)} for k in range(1, n + 1)]
     try:
         antes = len(ig.fila())
         fila = ig.agendar(itens, dados.get("ig_id"))
@@ -520,7 +538,7 @@ def limpar(dados: dict) -> dict:
         raise HTTPException(400, "nenhum video selecionado")  # nunca apaga tudo por engano
     alvos = _selecao(dados.get("videos"))
     if dados.get("somente_prontos"):
-        alvos = [v for v in alvos if mf.saida_de(v).exists()]
+        alvos = [v for v in alvos if mf.pronto(v)]
     agendados = {x["video"] for x in ig.fila() if x["status"] in ("pendente", "publicando")}
     presos = [v.name for v in alvos if v.name in agendados]
     if presos:
@@ -532,16 +550,11 @@ def limpar(dados: dict) -> dict:
                 if dados.get("todos") else "selecionados",
                 len(alvos), ", ".join(v.name for v in alvos[:20]))
     if alvo == "renders":
-        n = 0
-        for v in alvos:
-            if mf.saida_de(v).exists():
-                mf.saida_de(v).unlink()
-                n += 1
-        return {"limpos": n}
+        return {"limpos": sum(1 for v in alvos if mf.apagar_saidas(v))}
     if alvo == "originais":
         for v in alvos:
-            for arq in (v, v.with_suffix(".txt"), mf._sidecar_corte(v), mf.saida_de(v),
-                        *lf.arquivos_de(v)):
+            mf.apagar_saidas(v)
+            for arq in (v, v.with_suffix(".txt"), mf._sidecar_corte(v), *lf.arquivos_de(v)):
                 arq.unlink(missing_ok=True)
         _quadros.clear()
         _duracoes.clear()

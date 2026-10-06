@@ -35,6 +35,7 @@ log = logging.getLogger("instagram_filmes")
 
 GRAPH = "https://graph.facebook.com/v23.0"
 TENTATIVAS = 3
+DURACAO_MAX = 90.0   # segundos; o Reels por API recusa acima disso
 ESPERA_REPETIR = timedelta(minutes=10)
 
 _trava = threading.RLock()   # config e fila sao lidas/escritas pelo painel e pelo agendador
@@ -62,7 +63,7 @@ def _arq_fila() -> Path:
 CONFIG_PADRAO = {
     "contas": [],            # [{"ig_id", "username", "pagina", "token"}]
     "ativa": None,           # ig_id da conta padrao
-    "legenda_modelo": "{gancho} 🎬\n\nSegue pra ver mais cenas!",
+    "legenda_modelo": "{gancho} 🎬 {parte}\n\nSegue pra ver mais cenas!",
     "hashtags": "#filmes #cinema #series #netflix #filme",
     "por_dia": 5,
     "inicio": "09:00",
@@ -244,6 +245,13 @@ def publicar(video: Path, legenda: str, ig_id: str | None = None,
     """Sobe o arquivo e publica como Reels. Devolve {"media_id", "permalink"}."""
     conta = _conta(ig_id)
     token = conta["token"]
+    # medido nesta conta em 05/10/2026: 90,0s sobe, 91s volta "ProcessingFailedError"
+    # do rupload, sem dizer o motivo. Checa antes de gastar o upload.
+    duracao = mf.duracao(video)
+    if duracao > DURACAO_MAX:
+        raise ErroInstagram(f"o video tem {duracao:.0f}s e o Instagram aceita no maximo "
+                            f"{DURACAO_MAX:.0f}s por API: corte o fim (Fim no corte) e renderize "
+                            "de novo", fatal=True)
     criado = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media", data={
         "media_type": "REELS", "upload_type": "resumable", "caption": legenda[:2200],
         "share_to_feed": "true", "access_token": token}, timeout=60))
@@ -290,9 +298,16 @@ def fila() -> list[dict]:
     return _ler(_arq_fila(), [])
 
 
-def montar_legenda(gancho: str, cfg: dict | None = None) -> str:
+def montar_legenda(gancho: str, cfg: dict | None = None, parte: int = 1, total: int = 1) -> str:
+    """Modelo com {gancho} e, opcional, {parte} ("Parte 2/3"). Sem {parte} no modelo
+    e com mais de uma parte, o "Parte k/n" entra sozinho no fim do texto."""
     cfg = cfg or config()
-    texto = cfg["legenda_modelo"].replace("{gancho}", gancho.strip())
+    rotulo = f"Parte {parte}/{total}" if total > 1 else ""
+    modelo = cfg["legenda_modelo"]
+    texto = modelo.replace("{gancho}", gancho.strip()).replace("{parte}", rotulo)
+    if rotulo and "{parte}" not in modelo:
+        texto = f"{texto.rstrip()}\n\n{rotulo}"
+    texto = "\n".join(l.rstrip() for l in texto.splitlines()).strip()
     return f"{texto}\n\n{cfg['hashtags']}".strip() if cfg["hashtags"].strip() else texto
 
 
@@ -318,17 +333,20 @@ def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,
 
 
 def agendar(itens: list[dict], ig_id: str | None = None) -> list[dict]:
-    """itens: [{"video": nome do original, "legenda": str}] -> entram na fila."""
+    """itens: [{"video", "legenda", "parte"?, "partes"?}] -> entram na fila, partes
+    do mesmo video em horarios seguidos e na ordem."""
     with _trava:
         cfg, atual = config(), fila()
         conta = _conta(ig_id)
-        ja = {(x["video"], x["ig_id"]) for x in atual if x["status"] in ("pendente", "publicando")}
-        novos = [i for i in itens if (i["video"], conta["ig_id"]) not in ja]
+        ja = {(x["video"], x.get("parte", 1), x["ig_id"]) for x in atual
+              if x["status"] in ("pendente", "publicando")}
+        novos = [i for i in itens if (i["video"], i.get("parte", 1), conta["ig_id"]) not in ja]
         ocupados = [datetime.fromisoformat(x["quando"]) for x in atual
                     if x["ig_id"] == conta["ig_id"] and x["status"] in ("pendente", "publicando")]
         for item, quando in zip(novos, horarios(len(novos), cfg, ocupados=ocupados)):
             atual.append({"id": f"{int(time.time() * 1000)}-{len(atual)}",
                           "video": item["video"], "legenda": item["legenda"],
+                          "parte": item.get("parte", 1), "partes": item.get("partes", 1),
                           "ig_id": conta["ig_id"], "username": conta["username"],
                           "quando": quando.isoformat(timespec="minutes"),
                           "status": "pendente", "tentativas": 0,
@@ -369,18 +387,30 @@ def processar_vencidos(agora: datetime | None = None) -> int:
     """
     agora = agora or datetime.now()
     with _trava:
-        vencidos = sorted((x for x in fila() if x["status"] == "pendente"
-                           and datetime.fromisoformat(x["quando"]) <= agora),
+        atual = fila()
+
+        def anterior_pendente(x):
+            # parte 2 nunca sai antes da 1 (ex.: parte 1 adiada por limite diario)
+            return any(y["video"] == x["video"] and y["ig_id"] == x["ig_id"]
+                       and y.get("parte", 1) < x.get("parte", 1)
+                       and y["status"] in ("pendente", "publicando", "erro") for y in atual)
+
+        vencidos = sorted((x for x in atual if x["status"] == "pendente"
+                           and datetime.fromisoformat(x["quando"]) <= agora
+                           and not anterior_pendente(x)),
                           key=lambda x: x["quando"])
         if not vencidos:
             return 0
         item = vencidos[0]
         _atualizar(item["id"], status="publicando")
 
-    video = mf.saida_de(mf.ENTRADA / item["video"])
+    saidas = mf.saidas_de(mf.ENTRADA / item["video"])
+    k = item.get("parte", 1)
+    video = saidas[k - 1] if len(saidas) >= k else None
     try:
-        if not video.exists():
-            raise ErroInstagram("o video renderizado nao existe mais (foi apagado?)", fatal=True)
+        if video is None or not video.exists():
+            raise ErroInstagram("o video renderizado nao existe mais (apagado ou renderizado "
+                                "de novo com outro numero de partes): agende de novo", fatal=True)
         r = publicar(video, item["legenda"], item["ig_id"])
         _atualizar(item["id"], status="publicado", permalink=r["permalink"], erro=None,
                    publicado_em=datetime.now().isoformat(timespec="minutes"))
