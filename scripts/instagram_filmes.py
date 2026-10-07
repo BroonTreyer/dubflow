@@ -8,22 +8,25 @@ nao precisa de servidor exposto, tunel nem bucket.
     2. POST {uri}  (bytes do video, headers offset/file_size)
     3. GET  /{container}?fields=status_code  ate FINISHED
     4. POST /{ig-user}/media_publish  creation_id=...                 -> media id
+    5. (opcional) POST /{media}/comments  primeiro comentario
 
 Conexao: o usuario cola um token de usuario da Graph API; daqui saem as Paginas e
 a conta do Instagram ligada a cada uma. Guardamos o token DA PAGINA: derivado de
 um token de usuario de longa duracao, ele nao expira. Com app id + secret o token
-curto e trocado pelo longo antes.
+curto e trocado pelo longo antes; os dois ficam guardados para a proxima conexao.
 
 Tudo em filmes/instagram.json e filmes/fila_instagram.json (pasta no .gitignore).
-Token nunca vai para log nem para a resposta da API do painel.
+Token e chave do app nunca vao para log nem para a resposta da API do painel.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -35,19 +38,32 @@ log = logging.getLogger("instagram_filmes")
 
 GRAPH = "https://graph.facebook.com/v23.0"
 TENTATIVAS = 3
-DURACAO_MAX = 90.0   # segundos; o Reels por API recusa acima disso
+DURACAO_MAX = 900.0                  # 15 min: teto do Reels por API (doc da Meta, 10/2026)
+TAMANHO_MAX = 300 * 1024 * 1024      # 300 MB, idem
 ESPERA_REPETIR = timedelta(minutes=10)
+METRICAS = ("views", "reach", "likes", "comments", "shares", "saved", "total_interactions")
+METRICAS_CADA = timedelta(hours=6)
+METRICAS_DIAS = 30                   # numeros de post mais velho quase nao mudam
+AVISO_TOKEN_DIAS = 3
+NOTIFICAR_CADA = timedelta(hours=12)
 
 _trava = threading.RLock()   # config e fila sao lidas/escritas pelo painel e pelo agendador
 
 
 class ErroInstagram(Exception):
-    """Erro da Graph API ja traduzido. `fatal` = nao adianta repetir (token, permissao)."""
+    """Erro da Graph API ja traduzido. `fatal` = nao adianta repetir (token, permissao).
 
-    def __init__(self, mensagem: str, fatal: bool = False, adiar: timedelta | None = None):
+    `processamento` = a Meta recebeu o arquivo mas nao conseguiu processar: vale uma
+    segunda tentativa com uma versao mais leve do mesmo video.
+    """
+
+    def __init__(self, mensagem: str, fatal: bool = False, adiar: timedelta | None = None,
+                 processamento: bool = False, codigo: int | None = None):
         super().__init__(mensagem)
         self.fatal = fatal
         self.adiar = adiar  # espera conhecida (limite diario): adia sem gastar tentativa
+        self.processamento = processamento
+        self.codigo = codigo
 
 
 # ------------------------------------------------------------------ arquivos
@@ -61,13 +77,19 @@ def _arq_fila() -> Path:
 
 
 CONFIG_PADRAO = {
-    "contas": [],            # [{"ig_id", "username", "pagina", "token"}]
+    "contas": [],            # [{"ig_id", "username", "pagina", "token", "expira", "acesso_expira"}]
     "ativa": None,           # ig_id da conta padrao
+    "app_id": "",            # guardados para a proxima conexao trocar o token sozinha
+    "app_secret": "",
     "legenda_modelo": "{gancho} 🎬 {parte}\n\nSegue pra ver mais cenas!",
     "hashtags": "#filmes #cinema #series #netflix #filme",
+    "legenda_ia": False,     # legenda de cada post escrita pela IA (cai no modelo se falhar)
+    "comentario": "",        # primeiro comentario automatico; vazio = nenhum
+    "distribuir": False,     # agendar repartindo os videos entre todas as contas
     "por_dia": 5,
     "inicio": "09:00",
     "intervalo_min": 180,
+    "notificados": {},       # aviso -> quando o Windows foi avisado (nao repete toda hora)
 }
 
 
@@ -98,15 +120,19 @@ def salvar_config(novo: dict) -> dict:
     """Grava o que e editavel no painel. Contas/tokens so mudam por conectar()."""
     with _trava:
         atual = config()
-        for k in ("legenda_modelo", "hashtags", "inicio", "ativa"):
+        for k in ("legenda_modelo", "hashtags", "inicio", "ativa", "comentario"):
             if k in novo:
                 atual[k] = str(novo[k]) if novo[k] is not None else None
+        for k in ("legenda_ia", "distribuir"):
+            if k in novo:
+                atual[k] = bool(novo[k])
         for k, (lo, hi) in (("por_dia", (1, 50)), ("intervalo_min", (5, 1440))):
             if k in novo:
                 try:
                     atual[k] = min(max(int(novo[k]), lo), hi)
                 except (TypeError, ValueError):
                     pass
+        atual["comentario"] = (atual["comentario"] or "")[:2200]
         try:
             datetime.strptime(atual["inicio"], "%H:%M")
         except ValueError:
@@ -118,10 +144,13 @@ def salvar_config(novo: dict) -> dict:
 
 
 def config_publica() -> dict:
-    """Config sem tokens, para mandar ao navegador."""
+    """Config sem tokens nem chave do app, para mandar ao navegador."""
     c = config()
-    return {**c, "contas": [{k: v for k, v in conta.items() if k != "token"}
-                            for conta in c["contas"]]}
+    publica = {k: v for k, v in c.items() if k not in ("app_secret", "notificados")}
+    publica["app_salvo"] = bool(c["app_id"] and c["app_secret"])
+    publica["contas"] = [{k: v for k, v in conta.items() if k != "token"}
+                         for conta in c["contas"]]
+    return publica
 
 
 def _conta(ig_id: str | None) -> dict:
@@ -138,27 +167,28 @@ def _conta(ig_id: str | None) -> dict:
 def _explicar(corpo: dict) -> ErroInstagram:
     depuracao = corpo.get("debug_info") or {}
     if depuracao.get("type") == "ProcessingFailedError":
-        # resposta do rupload, sem motivo. O que a provoca na pratica e video longo:
-        # a Meta processa durante o envio e desiste antes de terminar.
+        # resposta do rupload, sem motivo: a Meta recebeu e desistiu de processar
         return ErroInstagram(
-            "A Meta nao terminou de processar o video no envio direto (acontece com "
-            "parte longa). Diminua 'Duracao maxima de cada parte' no molde (60s funciona), "
-            "renderize de novo e agende de novo.", fatal=True)
+            "A Meta nao conseguiu processar o video no envio direto, nem na versao mais "
+            "leve. Renderize de novo (o render novo e mais leve de processar) ou diminua "
+            "'Duracao maxima de cada parte' no molde.", fatal=True, processamento=True)
     erro = corpo.get("error") or {}
     codigo, msg = erro.get("code"), erro.get("message", "") or str(corpo)
     sub = erro.get("error_subcode")
     if codigo in (190, 102) or "session" in msg.lower():
-        return ErroInstagram("Token expirado ou invalido: conecte o Instagram de novo.", fatal=True)
+        return ErroInstagram("Token expirado ou invalido: conecte o Instagram de novo.",
+                             fatal=True, codigo=190)
     if codigo in (10, 200) or "permission" in msg.lower():
         return ErroInstagram("Token sem permissao de publicar (instagram_content_publish) "
-                             "ou a conta nao e Profissional ligada a uma Pagina.", fatal=True)
+                             "ou a conta nao e Profissional ligada a uma Pagina.",
+                             fatal=True, codigo=10)
     if codigo == 9 or sub == 2207042 or "limit" in msg.lower():
         return ErroInstagram("Limite de publicacoes da conta atingido (24h); adiado 1h.",
                              adiar=timedelta(hours=1))
     if codigo in (4, 17, 32, 613):
         return ErroInstagram("Muitas chamadas a API agora; adiado 15 min.",
                              adiar=timedelta(minutes=15))
-    return ErroInstagram(f"Instagram recusou: {msg}")
+    return ErroInstagram(f"Instagram recusou: {msg}", codigo=codigo)
 
 
 def _json(resp: requests.Response) -> dict:
@@ -172,15 +202,22 @@ def _json(resp: requests.Response) -> dict:
 
 
 def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict:
-    """Descobre as contas do Instagram ligadas as Paginas do token e guarda todas."""
+    """Descobre as contas do Instagram ligadas as Paginas do token e guarda todas.
+
+    Sem app id/secret no pedido, usa os guardados da ultima conexao. Devolve a
+    config publica com `aviso` quando o token que ficou ainda vai vencer logo.
+    """
     token_usuario = (token_usuario or "").strip()
     if not token_usuario:
         raise ErroInstagram("cole o token", fatal=True)
+    salvo = config()
+    app_id = (app_id or "").strip() or salvo["app_id"]
+    app_secret = (app_secret or "").strip() or salvo["app_secret"]
     if app_id and app_secret:
         # token curto (1-2h) -> longo (60 dias); token de Pagina derivado do longo nao expira
         token_usuario = _json(requests.get(f"{GRAPH}/oauth/access_token", params={
-            "grant_type": "fb_exchange_token", "client_id": app_id.strip(),
-            "client_secret": app_secret.strip(), "fb_exchange_token": token_usuario,
+            "grant_type": "fb_exchange_token", "client_id": app_id,
+            "client_secret": app_secret, "fb_exchange_token": token_usuario,
         }, timeout=30))["access_token"]
 
     paginas = _json(requests.get(f"{GRAPH}/me/accounts", params={
@@ -189,7 +226,7 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
     contas = [{"ig_id": p["instagram_business_account"]["id"],
                "username": p["instagram_business_account"].get("username", ""),
                "pagina": p.get("name", ""), "token": p["access_token"],
-               "expira": _expiracao(p["access_token"])}
+               **_validade(p["access_token"])}
               for p in paginas if p.get("instagram_business_account")]
     if not contas:
         raise ErroInstagram(_diagnostico(token_usuario, paginas), fatal=True)
@@ -199,23 +236,39 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
         por_id.update({x["ig_id"]: x for x in contas})
         c["contas"] = list(por_id.values())
         c["ativa"] = c["ativa"] or contas[0]["ig_id"]
+        if app_id and app_secret:  # so guarda o par que acabou de funcionar
+            c["app_id"], c["app_secret"] = app_id, app_secret
+        for x in contas:  # conta reconectada: avisos de token velho valem de novo
+            c["notificados"] = {k: v for k, v in (c.get("notificados") or {}).items()
+                                if x["ig_id"] not in k}
         _gravar(_arq_config(), c)
     log.info("instagram conectado: %s", ", ".join("@" + x["username"] for x in contas))
-    return config_publica()
+    publica = config_publica()
+    vence = [x for x in contas if x["expira"] and x["expira"] - time.time() < 7 * 86400]
+    if vence:
+        publica["aviso"] = (
+            "Conectado, mas o token vence em poucas horas. Para nao precisar reconectar, "
+            "preencha o ID e a Chave secreta do app e conecte de novo." if not app_secret else
+            "Conectado, mas a Meta devolveu um token que vence em menos de 7 dias.")
+    return publica
 
 
-def _expiracao(token: str) -> int | None:
-    """Epoch em que o token vence; 0 = nao vence; None = nao deu para saber."""
+def _validade(token: str) -> dict:
+    """expira: epoch em que o token vence (0 = nao vence; None = nao deu para saber).
+    acesso_expira: quando a Meta corta o acesso aos dados (reautorizar renova)."""
     try:
         dados = _json(requests.get(f"{GRAPH}/debug_token", params={
             "input_token": token, "access_token": token}, timeout=30)).get("data", {})
-        return int(dados.get("expires_at") or 0)
-    except (ErroInstagram, requests.RequestException, ValueError):
-        return None
+        return {"expira": int(dados.get("expires_at") or 0),
+                "acesso_expira": int(dados.get("data_access_expires_at") or 0) or None}
+    except (ErroInstagram, requests.RequestException, ValueError, TypeError):
+        return {"expira": None, "acesso_expira": None}
 
 
 PERMISSOES = ("instagram_basic", "instagram_content_publish", "pages_show_list",
               "pages_read_engagement", "business_management")
+# nao impedem de publicar: sem elas so falta o recurso correspondente
+PERMISSOES_EXTRAS = ("instagram_manage_insights", "instagram_manage_comments")
 
 
 def _diagnostico(token_usuario: str, paginas: list[dict]) -> str:
@@ -250,6 +303,14 @@ def desconectar(ig_id: str) -> dict:
     return config_publica()
 
 
+def esquecer_app() -> dict:
+    with _trava:
+        c = config()
+        c["app_id"], c["app_secret"] = "", ""
+        _gravar(_arq_config(), c)
+    return config_publica()
+
+
 def uso_do_limite(ig_id: str | None = None) -> dict:
     conta = _conta(ig_id)
     dados = _json(requests.get(f"{GRAPH}/{conta['ig_id']}/content_publishing_limit", params={
@@ -259,56 +320,163 @@ def uso_do_limite(ig_id: str | None = None) -> dict:
             "limite": (item.get("config") or {}).get("quota_total", 50)}
 
 
-def publicar(video: Path, legenda: str, ig_id: str | None = None,
-             espera_max: int = 900) -> dict:
-    """Sobe o arquivo e publica como Reels. Devolve {"media_id", "permalink"}."""
-    conta = _conta(ig_id)
+def _subir(conta: dict, video: Path, legenda: str) -> str:
+    """Cria o container e sobe o arquivo. Devolve o id do container."""
     token = conta["token"]
-    # medido nesta conta em 05/10/2026: 90,0s sobe, 91s volta "ProcessingFailedError"
-    # do rupload, sem dizer o motivo. Checa antes de gastar o upload.
-    duracao = mf.duracao(video)
-    if duracao > DURACAO_MAX:
-        raise ErroInstagram(f"o video tem {duracao:.0f}s e o Instagram aceita no maximo "
-                            f"{DURACAO_MAX:.0f}s por API: corte o fim (Fim no corte) e renderize "
-                            "de novo", fatal=True)
     criado = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media", data={
         "media_type": "REELS", "upload_type": "resumable", "caption": legenda[:2200],
         "share_to_feed": "true", "access_token": token}, timeout=60))
     container, uri = criado["id"], criado.get("uri")
     if not uri:
         raise ErroInstagram("a API nao devolveu o endereco de upload")
-
     tamanho = video.stat().st_size
     with open(video, "rb") as f:
-        enviado = _json(requests.post(uri, data=f, timeout=600, headers={
+        enviado = _json(requests.post(uri, data=f, timeout=900, headers={
             "Authorization": f"OAuth {token}", "offset": "0", "file_size": str(tamanho),
             "Content-Type": "application/octet-stream"}))
     if not enviado.get("success", True):
         raise ErroInstagram(f"upload recusado: {enviado}")
+    return container
 
+
+def _esperar(container: str, token: str, espera_max: int) -> None:
     limite = time.time() + espera_max
     status = "IN_PROGRESS"
     while time.time() < limite:
-        status = _json(requests.get(f"{GRAPH}/{container}", params={
-            "fields": "status_code,status", "access_token": token}, timeout=30)
-        ).get("status_code", "UNKNOWN")
+        dados = _json(requests.get(f"{GRAPH}/{container}", params={
+            "fields": "status_code,status", "access_token": token}, timeout=30))
+        status = dados.get("status_code", "UNKNOWN")
         if status == "FINISHED":
-            break
+            return
         if status in ("ERROR", "EXPIRED"):
-            raise ErroInstagram(f"o Instagram nao conseguiu processar o video ({status})")
+            motivo = f": {dados['status']}" if dados.get("status") else ""
+            raise ErroInstagram(f"o Instagram nao conseguiu processar o video ({status}{motivo})")
         time.sleep(8)
-    else:
-        raise ErroInstagram(f"processamento demorou demais ({status})")
+    raise ErroInstagram(f"processamento demorou demais ({status})")
+
+
+def publicar(video: Path, legenda: str, ig_id: str | None = None,
+             espera_max: int = 1800, comentario: str | None = None) -> dict:
+    """Sobe o arquivo e publica como Reels. Devolve {"media_id", "permalink"} e, se o
+    primeiro comentario falhou, "comentario_erro" (o post em si saiu)."""
+    conta = _conta(ig_id)
+    token = conta["token"]
+    duracao = mf.duracao(video)
+    if duracao > DURACAO_MAX:
+        raise ErroInstagram(f"o video tem {duracao / 60:.1f} min e o Reels aceita no maximo "
+                            f"{DURACAO_MAX / 60:.0f} min: diminua 'Duracao maxima de cada "
+                            "parte' e renderize de novo", fatal=True)
+    if video.stat().st_size > TAMANHO_MAX:
+        raise ErroInstagram("o arquivo passa de 300 MB (limite do Reels): renderize de novo, "
+                            "o render atual ajusta a qualidade para caber", fatal=True)
+    try:
+        container = _subir(conta, video, legenda)
+    except ErroInstagram as exc:
+        if not exc.processamento:
+            raise
+        # a Meta desistiu de processar: tenta UMA vez com uma versao mais leve
+        log.warning("Meta nao processou %s; tentando versao leve", video.name)
+        leve = video.with_name(video.stem + ".leve.parcial.mp4")  # orfao e limpo no boot
+        try:
+            mf.recodificar_leve(video, leve)
+            container = _subir(conta, leve, legenda)
+        finally:
+            leve.unlink(missing_ok=True)
+    _esperar(container, token, espera_max)
 
     media_id = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media_publish", data={
         "creation_id": container, "access_token": token}, timeout=60))["id"]
     try:
         permalink = _json(requests.get(f"{GRAPH}/{media_id}", params={
             "fields": "permalink", "access_token": token}, timeout=30)).get("permalink")
-    except ErroInstagram:
+    except (ErroInstagram, requests.RequestException):
         permalink = None
     log.info("publicado em @%s: %s", conta["username"], permalink or media_id)
-    return {"media_id": media_id, "permalink": permalink}
+    r = {"media_id": media_id, "permalink": permalink}
+    if comentario and comentario.strip():
+        try:
+            _json(requests.post(f"{GRAPH}/{media_id}/comments", data={
+                "message": comentario.strip()[:2200], "access_token": token}, timeout=30))
+        except (ErroInstagram, requests.RequestException) as exc:
+            # o post ja saiu: comentario que falha nao pode virar erro do post
+            r["comentario_erro"] = (
+                "sem a permissao instagram_manage_comments no token"
+                if getattr(exc, "codigo", None) == 10 else str(exc))
+            log.warning("primeiro comentario falhou (%s): %s", media_id, exc)
+    return r
+
+
+# ------------------------------------------------------------------ resultados
+
+def metricas(media_id: str, token: str) -> dict:
+    dados = _json(requests.get(f"{GRAPH}/{media_id}/insights", params={
+        "metric": ",".join(METRICAS), "access_token": token}, timeout=30)).get("data", [])
+    saida = {}
+    for d in dados:
+        valor = (d.get("values") or [{}])[0].get("value")
+        if valor is None:
+            valor = (d.get("total_value") or {}).get("value")
+        saida[d.get("name")] = valor
+    return saida
+
+
+def atualizar_metricas(forcar: bool = False, agora: datetime | None = None,
+                       maximo: int = 60) -> dict:
+    """Busca os numeros dos posts publicados nos ultimos METRICAS_DIAS dias.
+
+    Sem forcar, so os que nao foram atualizados nas ultimas METRICAS_CADA horas.
+    """
+    agora = agora or datetime.now()
+    tokens = {c["ig_id"]: c["token"] for c in config()["contas"]}
+    alvos = []
+    for x in fila():
+        if x["status"] != "publicado" or not x.get("media_id") or x["ig_id"] not in tokens:
+            continue
+        publicado = datetime.fromisoformat(x.get("publicado_em") or x["quando"])
+        if agora - publicado > timedelta(days=METRICAS_DIAS):
+            continue
+        ultima = x.get("metricas_em")
+        if not forcar and ultima and agora - datetime.fromisoformat(ultima) < METRICAS_CADA:
+            continue
+        alvos.append(x)
+    feitos, erro = 0, None
+    for x in alvos[:maximo]:
+        try:
+            m = metricas(x["media_id"], tokens[x["ig_id"]])
+        except ErroInstagram as exc:
+            erro = ("o token nao tem a permissao instagram_manage_insights: gere de novo "
+                    "com ela marcada" if exc.codigo == 10 else str(exc))
+            if exc.fatal:
+                break  # token/permissao: os outros posts falhariam igual
+            continue
+        except requests.RequestException as exc:
+            erro = f"sem conexao com a Meta: {exc}"
+            break
+        _atualizar(x["id"], metricas=m, metricas_em=agora.isoformat(timespec="minutes"))
+        feitos += 1
+    return {"atualizados": feitos, "erro": erro}
+
+
+def resultados() -> dict:
+    """Posts publicados com numeros, e a media de visualizacoes por gancho."""
+    posts = []
+    for x in fila():
+        if x["status"] != "publicado":
+            continue
+        m = x.get("metricas") or {}
+        posts.append({"id": x["id"], "video": x["video"], "username": x["username"],
+                      "parte": x.get("parte", 1), "partes": x.get("partes", 1),
+                      "gancho": x.get("gancho") or x["legenda"].split("\n")[0][:120],
+                      "permalink": x.get("permalink"),
+                      "publicado_em": x.get("publicado_em") or x["quando"],
+                      "metricas": m, "metricas_em": x.get("metricas_em")})
+    por_gancho: dict[str, list[int]] = {}
+    for p in posts:
+        if p["metricas"].get("views") is not None:
+            por_gancho.setdefault(p["gancho"], []).append(int(p["metricas"]["views"]))
+    ganchos = sorted(({"gancho": g, "posts": len(v), "media_views": round(sum(v) / len(v))}
+                      for g, v in por_gancho.items()), key=lambda g: -g["media_views"])
+    return {"posts": posts, "ganchos": ganchos}
 
 
 # ------------------------------------------------------------------ fila
@@ -342,7 +510,8 @@ def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,
     agora = depois_de or datetime.now()
     h, m = map(int, cfg["inicio"].split(":"))
     ocupados_set = {o.replace(second=0, microsecond=0) for o in (ocupados or [])}
-    saida, dia = [], agora.replace(hour=h, minute=m, second=0, microsecond=0)
+    # a janela que comecou ontem ainda pode ter horarios livres hoje de madrugada
+    saida, dia = [], agora.replace(hour=h, minute=m, second=0, microsecond=0) - timedelta(days=1)
     while len(saida) < quantidade:
         for i in range(cfg["por_dia"]):
             t = dia + timedelta(minutes=i * cfg["intervalo_min"])
@@ -356,25 +525,53 @@ def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,
     return saida
 
 
-def agendar(itens: list[dict], ig_id: str | None = None) -> list[dict]:
-    """itens: [{"video", "legenda", "parte"?, "partes"?}] -> entram na fila, partes
-    do mesmo video em horarios seguidos e na ordem."""
+def _ativos(atual: list[dict], ig_id: str) -> list[dict]:
+    return [x for x in atual if x["ig_id"] == ig_id and x["status"] in ("pendente", "publicando")]
+
+
+def agendar(itens: list[dict], ig_id: str | None = None,
+            distribuir: bool = False) -> list[dict]:
+    """itens: [{"video", "legenda", "parte"?, "partes"?, "gancho"?}] -> entram na fila,
+    partes do mesmo video em horarios seguidos, na ordem e na MESMA conta.
+
+    distribuir=True reparte os videos entre todas as contas conectadas, sempre
+    mandando o proximo para a conta com menos posts na fila.
+    """
     with _trava:
         cfg, atual = config(), fila()
-        conta = _conta(ig_id)
-        ja = {(x["video"], x.get("parte", 1), x["ig_id"]) for x in atual
-              if x["status"] in ("pendente", "publicando")}
-        novos = [i for i in itens if (i["video"], i.get("parte", 1), conta["ig_id"]) not in ja]
-        ocupados = [datetime.fromisoformat(x["quando"]) for x in atual
-                    if x["ig_id"] == conta["ig_id"] and x["status"] in ("pendente", "publicando")]
-        for item, quando in zip(novos, horarios(len(novos), cfg, ocupados=ocupados)):
-            atual.append({"id": f"{int(time.time() * 1000)}-{len(atual)}",
-                          "video": item["video"], "legenda": item["legenda"],
-                          "parte": item.get("parte", 1), "partes": item.get("partes", 1),
-                          "ig_id": conta["ig_id"], "username": conta["username"],
-                          "quando": quando.isoformat(timespec="minutes"),
-                          "status": "pendente", "tentativas": 0,
-                          "erro": None, "permalink": None})
+        contas = cfg["contas"] if distribuir else [_conta(ig_id)]
+        if not contas:
+            raise ErroInstagram("nenhuma conta do Instagram conectada", fatal=True)
+        carga = Counter({c["ig_id"]: len(_ativos(atual, c["ig_id"])) for c in contas})
+        na_fila = {(x["video"], x.get("parte", 1), x["ig_id"]) for x in atual
+                   if x["status"] in ("pendente", "publicando")}
+        videos_na_fila = {x["video"] for x in atual if x["status"] in ("pendente", "publicando")}
+        grupos: dict[str, list[dict]] = {}
+        for i in itens:
+            grupos.setdefault(i["video"], []).append(i)
+        destino: dict[str, list[dict]] = {}
+        for video, grupo in grupos.items():
+            if distribuir:
+                if video in videos_na_fila:
+                    continue  # ja esta na fila de alguma conta
+                conta = min(contas, key=lambda c: (carga[c["ig_id"]], contas.index(c)))
+            else:
+                conta = contas[0]
+            novos = [i for i in grupo if (video, i.get("parte", 1), conta["ig_id"]) not in na_fila]
+            destino.setdefault(conta["ig_id"], []).extend(novos)
+            carga[conta["ig_id"]] += len(novos)
+        nomes = {c["ig_id"]: c["username"] for c in contas}
+        for conta_id, novos in destino.items():
+            ocupados = [datetime.fromisoformat(x["quando"]) for x in _ativos(atual, conta_id)]
+            for item, quando in zip(novos, horarios(len(novos), cfg, ocupados=ocupados)):
+                atual.append({"id": f"{int(time.time() * 1000)}-{len(atual)}",
+                              "video": item["video"], "legenda": item["legenda"],
+                              "gancho": item.get("gancho"),
+                              "parte": item.get("parte", 1), "partes": item.get("partes", 1),
+                              "ig_id": conta_id, "username": nomes[conta_id],
+                              "quando": quando.isoformat(timespec="minutes"),
+                              "status": "pendente", "tentativas": 0,
+                              "erro": None, "permalink": None})
         _gravar(_arq_fila(), atual)
         return atual
 
@@ -399,10 +596,50 @@ def reorganizar(ig_id: str | None = None) -> list[dict]:
         return atual
 
 
+def repetir(ids: list[str]) -> list[dict]:
+    """Posts com erro voltam para a fila nos proximos horarios livres da conta.
+
+    As partes seguintes do mesmo video (que ficaram paradas esperando a parte que
+    falhou) vao junto, logo depois dela e na ordem.
+    """
+    with _trava:
+        cfg, atual = config(), fila()
+        alvos = [x for x in atual if x["id"] in ids and x["status"] == "erro"]
+        mover: dict[str, dict] = {}
+        for a in alvos:
+            for x in atual:
+                if x["video"] == a["video"] and x["ig_id"] == a["ig_id"] \
+                        and x.get("parte", 1) >= a.get("parte", 1) \
+                        and x["status"] in ("pendente", "erro"):
+                    mover[x["id"]] = x
+        for conta in {x["ig_id"] for x in mover.values()}:
+            grupo = [x for x in mover.values() if x["ig_id"] == conta]
+            primeiro = {}  # video sai na posicao do seu post mais antigo
+            for x in grupo:
+                primeiro[x["video"]] = min(primeiro.get(x["video"], x["quando"]), x["quando"])
+            grupo.sort(key=lambda x: (primeiro[x["video"]], x["video"], x.get("parte", 1)))
+            ocupados = [datetime.fromisoformat(x["quando"]) for x in _ativos(atual, conta)
+                        if x["id"] not in mover]
+            for item, quando in zip(grupo, horarios(len(grupo), cfg, ocupados=ocupados)):
+                item.update(status="pendente", tentativas=0, erro=None,
+                            quando=quando.isoformat(timespec="minutes"))
+        _gravar(_arq_fila(), atual)
+        return atual
+
+
+def bloqueados(atual: list[dict] | None = None) -> set[str]:
+    """Ids de pendentes parados porque uma parte anterior do video esta com erro."""
+    atual = fila() if atual is None else atual
+    com_erro = {(x["video"], x["ig_id"], x.get("parte", 1)) for x in atual if x["status"] == "erro"}
+    return {x["id"] for x in atual if x["status"] == "pendente" and any(
+        v == x["video"] and c == x["ig_id"] and p < x.get("parte", 1) for v, c, p in com_erro)}
+
+
 def remover(ids: list[str]) -> list[dict]:
     """Tira da fila o que ainda nao foi publicado (publicados ficam como historico)."""
     with _trava:
-        atual = [x for x in fila() if not (x["id"] in ids and x["status"] != "publicando")]
+        atual = [x for x in fila() if not (x["id"] in ids and x["status"] not in
+                                           ("publicando", "publicado"))]
         _gravar(_arq_fila(), atual)
         return atual
 
@@ -455,6 +692,7 @@ def processar_vencidos(agora: datetime | None = None) -> int:
             return 0
         item = vencidos[0]
         _atualizar(item["id"], status="publicando")
+        comentario = config()["comentario"]
 
     saidas = mf.saidas_de(mf.ENTRADA / item["video"])
     k = item.get("parte", 1)
@@ -468,10 +706,13 @@ def processar_vencidos(agora: datetime | None = None) -> int:
         if video is None or not video.exists():
             raise ErroInstagram("o video renderizado nao existe mais (apagado ou renderizado "
                                 "de novo com outro numero de partes): agende de novo", fatal=True)
-        r = publicar(video, item["legenda"], item["ig_id"])
-        _atualizar(item["id"], status="publicado", permalink=r["permalink"], erro=None,
+        r = publicar(video, item["legenda"], item["ig_id"], comentario=comentario)
+        _atualizar(item["id"], status="publicado", permalink=r["permalink"],
+                   media_id=r["media_id"], erro=None,
+                   comentario_erro=r.get("comentario_erro"),
                    publicado_em=datetime.now().isoformat(timespec="minutes"))
-    except (ErroInstagram, requests.RequestException) as exc:
+    except (ErroInstagram, requests.RequestException, OSError,
+            subprocess.CalledProcessError) as exc:
         fatal = getattr(exc, "fatal", False)
         adiar = getattr(exc, "adiar", None)
         if adiar and not fatal:  # espera conhecida: nao e falha do post
@@ -501,13 +742,88 @@ def recuperar_presos() -> None:
         _gravar(_arq_fila(), atual)
 
 
+# ------------------------------------------------------------------ avisos
+
+def avisos(agora: datetime | None = None) -> list[dict]:
+    """O que precisa de atencao, do mais grave ao menos: [{chave, nivel, texto}]."""
+    agora = agora or datetime.now()
+    agora_ts = agora.timestamp()
+    cfg, atual = config(), fila()
+    saida = []
+    for c in cfg["contas"]:
+        nome = "@" + c["username"]
+        expira = c.get("expira")
+        if expira and expira <= agora_ts:
+            saida.append({"chave": f"vencido:{c['ig_id']}", "nivel": "erro",
+                          "texto": f"O token de {nome} venceu: nada sai ate conectar de novo."})
+        elif expira and expira - agora_ts < AVISO_TOKEN_DIAS * 86400:
+            quando = datetime.fromtimestamp(expira).strftime("%d/%m %H:%M")
+            saida.append({"chave": f"vence:{c['ig_id']}", "nivel": "alerta",
+                          "texto": f"O token de {nome} vence em {quando}: conecte de novo "
+                                   "com o ID e a Chave secreta do app (fica permanente)."})
+        acesso = c.get("acesso_expira")
+        if acesso and acesso - agora_ts < 7 * 86400:
+            quando = datetime.fromtimestamp(acesso).strftime("%d/%m")
+            saida.append({"chave": f"acesso:{c['ig_id']}", "nivel": "alerta",
+                          "texto": f"A Meta pede nova autorizacao de {nome} ate {quando}: "
+                                   "gere um token novo e conecte de novo."})
+    invalidos = {x["ig_id"] for x in atual if x["status"] == "erro"
+                 and (x.get("erro") or "").startswith("Token expirado")}
+    for ig_id in invalidos - {c["ig_id"] for c in cfg["contas"]
+                              if c.get("expira") and c["expira"] <= agora_ts}:
+        nome = next((x["username"] for x in atual if x["ig_id"] == ig_id), ig_id)
+        saida.append({"chave": f"invalido:{ig_id}", "nivel": "erro",
+                      "texto": f"A Meta recusou o token de @{nome}: conecte de novo."})
+    erros = sum(1 for x in atual if x["status"] == "erro")
+    if erros:
+        saida.append({"chave": f"erros:{erros}", "nivel": "alerta",
+                      "texto": f"{erros} post(s) com erro na fila: veja em Publicar no "
+                               "Instagram e use 'Tentar de novo'."})
+    if not cfg["contas"] and any(x["status"] == "pendente" for x in atual):
+        saida.append({"chave": "sem-conta", "nivel": "erro",
+                      "texto": "Ha posts na fila mas nenhuma conta conectada."})
+    return saida
+
+
+def notificar_avisos(agora: datetime | None = None) -> int:
+    """Manda para o Windows os avisos novos (cada um no maximo a cada 12h)."""
+    agora = agora or datetime.now()
+    novos = []
+    with _trava:
+        c = config()
+        enviados = dict(c.get("notificados") or {})
+        for a in avisos(agora):
+            ultimo = enviados.get(a["chave"])
+            if ultimo and agora - datetime.fromisoformat(ultimo) < NOTIFICAR_CADA:
+                continue
+            enviados[a["chave"]] = agora.isoformat(timespec="minutes")
+            novos.append(a)
+        if novos:
+            c["notificados"] = enviados
+            _gravar(_arq_config(), c)
+    for a in novos:
+        from scripts import notificar
+        notificar.windows("Painel de Filmes", a["texto"])
+    return len(novos)
+
+
+# ------------------------------------------------------------------ agendador
+
 def agendador(parar: threading.Event, intervalo: int = 30) -> None:
     recuperar_presos()
+    ultimo_aviso = ultima_metrica = datetime.min
     while not parar.is_set():
         try:
             while processar_vencidos():
                 if parar.is_set():
                     break
+            agora = datetime.now()
+            if agora - ultimo_aviso >= timedelta(minutes=10):
+                ultimo_aviso = agora
+                notificar_avisos(agora)
+            if agora - ultima_metrica >= timedelta(hours=1):
+                ultima_metrica = agora
+                atualizar_metricas(agora=agora)
         except Exception:  # noqa: BLE001 — o agendador nao pode morrer
             log.exception("agendador do instagram")
         parar.wait(intervalo)

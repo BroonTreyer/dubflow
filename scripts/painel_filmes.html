@@ -140,6 +140,17 @@
   .tag.rodando { color: var(--acento); border-color: var(--acento); }
   button.perigo { color: var(--acento); border-color: var(--acento); }
   .info { color: var(--sutil); font-size: 13px; }
+  .avisos { padding: 10px 24px; display: flex; flex-direction: column; gap: 6px;
+            background: var(--painel); border-bottom: 1px solid var(--borda); }
+  .avisos[hidden] { display: none; }
+  .aviso { display: flex; gap: 10px; align-items: center; font-size: 13px; padding: 8px 12px;
+           border-radius: 8px; border: 1px solid var(--borda); }
+  .aviso.erro { border-color: var(--acento); color: var(--acento); font-weight: 600; }
+  .aviso span { flex: 1; }
+  .aviso button { padding: 4px 10px; font-size: 12px; }
+  .ig .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ig .resultados { max-height: 420px; overflow-y: auto; }
+  .ig .ok-app { color: var(--ok); font-size: 13px; margin: 6px 0; }
 </style>
 </head>
 <body>
@@ -148,6 +159,7 @@
   <span class="salvo" id="salvo">carregando…</span>
   <button class="prim" id="btnSalvar">Salvar molde</button>
 </header>
+<div id="avisos" class="avisos" hidden></div>
 
 <main>
   <!-- CONTROLES -->
@@ -164,10 +176,10 @@
     <div class="check"><input type="checkbox" data-k="caixa_alta" id="c3"><label for="c3" style="margin:0">Gancho em CAIXA ALTA</label></div>
     <div class="check"><input type="checkbox" data-k="legendar_padrao" id="c4"><label for="c4" style="margin:0">Legendar por padrão (fala transcrita e traduzida pra pt-BR)</label></div>
 
-    <h2>Partes (Instagram aceita até 90s)</h2>
+    <h2>Partes (o Reels aceita até 15 min)</h2>
     <label>Duração máxima de cada parte (s) <span class="valor" data-v="parte_max"></span></label>
-    <p style="margin:0 0 6px;color:var(--sutil);font-size:12px">Acima de ~70s a Meta costuma recusar o envio direto. 60s é seguro.</p>
-    <input type="range" min="30" max="90" step="1" data-k="parte_max">
+    <p style="margin:0 0 6px;color:var(--sutil);font-size:12px">Vídeo mais longo que isso vira Parte 1, Parte 2… 60s é o valor já testado no envio direto. No máximo (900s) nada é dividido.</p>
+    <input type="range" min="30" max="900" step="5" data-k="parte_max">
     <label>Selo da parte ({n} = número, {total} = quantas)</label>
     <input type="text" data-k="rotulo_parte">
     <label>Botão da última parte</label>
@@ -331,20 +343,25 @@
         <div id="igContas"></div>
         <div class="info" id="igLimite"></div>
         <details id="igConectarBox">
-          <summary style="cursor:pointer;font-weight:600">Conectar uma conta</summary>
+          <summary style="cursor:pointer;font-weight:600">Conectar ou reconectar uma conta</summary>
           <ol>
             <li>A conta do Instagram precisa ser <b>Profissional</b> (Criador ou Empresa) e estar <b>ligada a uma Página do Facebook</b>.</li>
             <li>Abra o <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener">Graph API Explorer</a>, escolha o seu app e adicione as permissões:
-              <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>business_management</code>.</li>
+              <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>business_management</code>.
+              Para ver os resultados e comentar sozinho, adicione também <code>instagram_manage_insights</code> e <code>instagram_manage_comments</code>.</li>
             <li>Clique em <b>Generate Access Token</b>, autorize, copie o token e cole aqui embaixo.</li>
-            <li>Opcional, mas recomendado: com o <b>ID e a Chave secreta do app</b> (Configurações › Básico) o token vira permanente. Sem eles, ele vence em cerca de 1 hora.</li>
+            <li><b>ID e Chave secreta do app</b> (no app da Meta: Configurações › Básico): com eles o token vira <b>permanente</b>. Ficam guardados neste PC, então só precisa preencher uma vez.</li>
           </ol>
           <label>Token de acesso</label>
           <input type="password" id="igToken" autocomplete="off" placeholder="EAAB…">
-          <label>ID do app (opcional)</label>
-          <input type="text" id="igAppId" autocomplete="off">
-          <label>Chave secreta do app (opcional)</label>
-          <input type="password" id="igAppSecret" autocomplete="off">
+          <div id="igAppSalvo" class="ok-app" hidden>✓ ID e chave do app guardados: o token vira permanente sozinho.
+            <button id="btnIgEsquecerApp" style="padding:2px 8px;font-size:12px;margin-left:6px">Trocar app</button></div>
+          <div id="igAppCampos">
+            <label>ID do app</label>
+            <input type="text" id="igAppId" autocomplete="off">
+            <label>Chave secreta do app</label>
+            <input type="password" id="igAppSecret" autocomplete="off">
+          </div>
           <div class="rodape"><button class="prim" id="btnIgConectar">Conectar</button></div>
           <div class="info" id="igConectarMsg" style="margin-top:6px"></div>
         </details>
@@ -356,6 +373,10 @@
         <textarea id="igModelo"></textarea>
         <label>Hashtags</label>
         <input type="text" id="igHashtags">
+        <div class="check"><input type="checkbox" id="igIa"><label for="igIa" style="margin:0">✨ Legenda escrita pela IA para cada vídeo (usa o gancho e as falas; se a IA falhar, usa o modelo acima)</label></div>
+        <label>Primeiro comentário automático (vazio = nenhum)</label>
+        <textarea id="igComentario" style="min-height:50px" placeholder="Ex.: Qual o nome desse filme? Comenta aí 👇"></textarea>
+        <div class="check" id="igDistribuirBox"><input type="checkbox" id="igDistribuir"><label for="igDistribuir" style="margin:0">Repartir os vídeos entre todas as contas conectadas</label></div>
         <h2>Horários</h2>
         <div class="grade" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 10px">
           <div><label>Posts por dia</label><input type="number" min="1" max="50" id="igPorDia"></div>
@@ -373,12 +394,21 @@
         <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
         <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
         <span style="flex:1"></span>
+        <button class="prim" id="btnIgRepetirTodos" hidden>↻ Tentar de novo os com erro</button>
         <button id="btnIgTirarTodos" class="perigo">Tirar todos os pendentes</button>
         <button id="btnIgReorg" title="Redistribui os pendentes pelos horários configurados, na mesma ordem">Reorganizar horários</button>
         <button id="btnIgLimparHist">Limpar publicados</button>
       </div>
       <div class="info" id="igFilaMsg" style="margin-bottom:8px"></div>
       <div id="igFila"></div>
+
+      <h2 style="margin-top:28px">Resultados</h2>
+      <div class="rodape" style="margin-top:0;margin-bottom:10px">
+        <button id="btnIgMetricas">Atualizar números agora</button>
+        <span class="info" id="igMetricasMsg" style="align-self:center">Os números dos últimos 30 dias atualizam sozinhos a cada 6 horas.</span>
+      </div>
+      <div id="igGanchos"></div>
+      <div id="igResultados" class="resultados"></div>
     </div>
   </div>
 </section>
@@ -877,13 +907,18 @@ function igDesenhar() {
       <b>@${esc(x.username)}</b><span class="info">${esc(x.pagina)}${avisoToken(x.expira)}</span>
       <button data-sair="${esc(x.ig_id)}" style="padding:2px 8px;font-size:12px">Remover</button>
     </div>`).join("") : '<div class="info">Nenhuma conta conectada.</div>';
-  $("#igConectarBox").open = !c.contas.length;
+  const vencida = c.contas.some(x => x.expira && x.expira * 1000 < Date.now());
+  if (!c.contas.length || vencida) $("#igConectarBox").open = true;
+  $("#igAppSalvo").hidden = !c.app_salvo;
+  $("#igAppCampos").hidden = !!c.app_salvo;
+  $("#igDistribuirBox").hidden = c.contas.length < 2;
 
   const pend = f.filter(x => x.status === "pendente").length;
   const pub = f.filter(x => x.status === "publicado").length;
   const err = f.filter(x => x.status === "erro").length;
   const velhos = f.filter(x => x.desatualizado).length;
   $("#btnIgCorrigir").hidden = !velhos || igCorrigindo;
+  $("#btnIgRepetirTodos").hidden = !err;
   $("#igResumo").textContent = `· ${pend} na fila · ${pub} publicados` + (err ? ` · ${err} com erro` : "");
   $("#igFilaMsg").innerHTML = velhos
     ? (igCorrigindo ? $("#igFilaMsg").innerHTML
@@ -905,13 +940,19 @@ function igDesenhar() {
       <td><span class="tag ${x.status === "publicado" ? "ok" : x.status === "erro" ? "erro" : x.status === "publicando" ? "rodando" : ""}"
             title="${esc(x.erro || "")}">${x.status}</span>
           ${x.desatualizado ? '<div><span class="tag erro" title="O render deste vídeo não bate mais com este post">desatualizado</span></div>' : ""}
+          ${x.bloqueado ? '<div><span class="tag erro" title="Só sai depois que a parte anterior for publicada">esperando a parte anterior</span></div>' : ""}
           ${x.erro && x.status !== "publicado" ? `<div class="info" style="font-size:11px;margin-top:4px">${esc(x.erro)}</div>` : ""}
+          ${x.comentario_erro ? `<div class="info" style="font-size:11px;margin-top:4px">Comentário não saiu: ${esc(x.comentario_erro)}</div>` : ""}
           ${x.permalink ? `<div><a href="${esc(x.permalink)}" target="_blank" rel="noopener">ver post</a></div>` : ""}</td>
       <td>${x.status === "pendente"
           ? `<textarea class="igLeg">${esc(x.legenda)}</textarea>`
           : `<div class="info" style="white-space:pre-wrap;font-size:12px">${esc(x.legenda.slice(0, 140))}</div>`}</td>
-      <td>${["pendente", "erro"].includes(x.status)
-          ? `<button data-agora style="padding:4px 8px;font-size:12px">Publicar agora</button>
+      <td>${x.status === "erro"
+          ? `<button data-repetir class="prim" style="padding:4px 8px;font-size:12px" title="Volta para o próximo horário livre (com as partes seguintes)">Tentar de novo</button><br>` : ""}
+          ${x.status === "pendente"
+          ? `<button data-ia style="padding:4px 8px;font-size:12px;margin-bottom:4px" title="Reescreve a legenda deste post com a IA">✨ Legenda IA</button><br>` : ""}
+          ${["pendente", "erro"].includes(x.status)
+          ? `<button data-agora style="padding:4px 8px;font-size:12px;margin-top:4px">Publicar agora</button>
              <button data-tirar style="padding:4px 8px;font-size:12px;margin-top:4px">Tirar</button>` : ""}</td>
     </tr>`).join("") + "</tbody></table>"
     : '<div class="vazio">Fila vazia. Selecione vídeos prontos e clique em “Agendar”.</div>';
@@ -923,6 +964,8 @@ function igPreencherCfg() {
   $("#igModelo").value = c.legenda_modelo; $("#igHashtags").value = c.hashtags;
   $("#igPorDia").value = c.por_dia; $("#igInicio").value = c.inicio;
   $("#igIntervalo").value = c.intervalo_min;
+  $("#igIa").checked = !!c.legenda_ia; $("#igComentario").value = c.comentario || "";
+  $("#igDistribuir").checked = !!c.distribuir;
   igCfgCarregada = true;
 }
 
@@ -931,7 +974,7 @@ async function igAbrir() {
   igCfgCarregada = false;
   await igCarregar();
   igPreencherCfg();   // só ao abrir: a atualização automática não apaga o que se digita
-  igLimite();
+  igLimite(); igResultados();
   clearInterval(igTimer); igTimer = setInterval(igCarregarFila, 10000);
 }
 function igFechar() {
@@ -963,8 +1006,16 @@ $("#btnIgConectar").addEventListener("click", async () => {
   if (!r.ok) { $("#igConectarMsg").textContent = "⚠ " + (d.detail || "falhou"); return; }
   ["#igToken", "#igAppId", "#igAppSecret"].forEach(id => $(id).value = "");  // não fica na tela
   igEstado.config = d;
-  $("#igConectarMsg").textContent = "Conectado: " + d.contas.map(x => "@" + x.username).join(", ");
-  igDesenhar(); igLimite();
+  $("#igConectarMsg").innerHTML = d.aviso
+    ? `<b style="color:var(--acento)">⚠ ${esc(d.aviso)}</b>`
+    : "Conectado: " + esc(d.contas.map(x => "@" + x.username).join(", "));
+  await igCarregar(); igLimite(); carregarAvisos();
+  const erros = igEstado.fila.filter(x => x.status === "erro").length;
+  if (erros) $("#igFilaMsg").innerHTML = `<b>${erros} post(s) com erro. Clique em “↻ Tentar de novo os com erro” para voltarem à fila.</b>`;
+});
+$("#btnIgEsquecerApp").addEventListener("click", async () => {
+  igEstado.config = await (await post("/api/ig/esquecer-app")).json();
+  igDesenhar();
 });
 
 $("#igContas").addEventListener("change", async e => {
@@ -983,19 +1034,22 @@ $("#btnIgSalvarCfg").addEventListener("click", async () => {
   igEstado.config = await (await post("/api/ig/config", {
     legenda_modelo: $("#igModelo").value, hashtags: $("#igHashtags").value,
     por_dia: $("#igPorDia").value, inicio: $("#igInicio").value,
-    intervalo_min: $("#igIntervalo").value})).json();
+    intervalo_min: $("#igIntervalo").value, legenda_ia: $("#igIa").checked,
+    comentario: $("#igComentario").value, distribuir: $("#igDistribuir").checked})).json();
   igPreencherCfg();
   $("#igCfgMsg").textContent = "Salvo. Para aplicar na fila já montada, use “Reorganizar horários”.";
 });
 
 async function igAgendar(nomes) {
   if (!nomes.length) { $("#igFilaMsg").textContent = "Nenhum vídeo pronto para agendar."; return; }
+  if (igEstado.config.legenda_ia) $("#igFilaMsg").textContent = "Escrevendo as legendas com a IA…";
   const r = await post("/api/ig/agendar", {videos: nomes});
   const d = await r.json();
   if (!r.ok) { $("#igFilaMsg").textContent = "⚠ " + (d.detail || "falhou"); return; }
-  igEstado.fila = d.fila; igDesenhar();
+  await igCarregar();
   $("#igFilaMsg").textContent = `${d.agendados} post(s) agendado(s).` +
     (d.ignorados_sem_render ? ` ${d.ignorados_sem_render} ignorado(s) por ainda não estarem renderizados.` : "") +
+    (d.legendas_sem_ia ? ` ${d.legendas_sem_ia} ficaram com o modelo fixo (a IA não respondeu).` : "") +
     (d.agendados < nomes.length - d.ignorados_sem_render ? " Os outros já estavam na fila." : "");
 }
 $("#btnIgAgendarSel").addEventListener("click", () =>
@@ -1073,8 +1127,71 @@ $("#igFila").addEventListener("click", async e => {
     else $("#igFilaMsg").textContent = "⚠ " + d.detail;
   } else if (e.target.hasAttribute("data-tirar")) {
     igEstado.fila = (await (await post("/api/ig/remover", {ids: [id]})).json()).fila; igDesenhar();
+  } else if (e.target.hasAttribute("data-repetir")) {
+    const item = igEstado.fila.find(x => x.id === id);
+    if (item?.erro?.startsWith("painel caiu") &&
+        !confirm("O painel caiu durante esta publicação: confira no Instagram se o post já saiu. Tentar de novo mesmo assim?")) return;
+    await igRepetir({ids: [id]});
+  } else if (e.target.hasAttribute("data-ia")) {
+    e.target.disabled = true; e.target.textContent = "Escrevendo…";
+    const r = await post("/api/ig/legenda-ia", {id});
+    const d = await r.json();
+    if (r.ok) { igEstado.fila = d.fila; igDesenhar(); await igCarregar(); $("#igFilaMsg").textContent = "Legenda reescrita pela IA."; }
+    else { $("#igFilaMsg").textContent = "⚠ " + d.detail; e.target.disabled = false; e.target.textContent = "✨ Legenda IA"; }
   }
 });
+async function igRepetir(corpo) {
+  const r = await post("/api/ig/repetir", corpo);
+  const d = await r.json();
+  if (!r.ok) { $("#igFilaMsg").textContent = "⚠ " + d.detail; return; }
+  await igCarregar(); carregarAvisos();
+  $("#igFilaMsg").textContent = `${d.repetidos} post(s) de volta à fila, nos próximos horários livres.`;
+}
+$("#btnIgRepetirTodos").addEventListener("click", () => {
+  const n = igEstado.fila.filter(x => x.status === "erro").length;
+  if (n && confirm(`Colocar os ${n} post(s) com erro de volta na fila, nos próximos horários livres?`))
+    igRepetir({todos: true});
+});
+
+/* resultados: numeros de cada post e media por gancho */
+const fmt = v => v === null || v === undefined ? "–" : Number(v).toLocaleString("pt-BR");
+function igDesenharResultados(d) {
+  $("#igGanchos").innerHTML = d.ganchos.length ? `<table><thead><tr><th>Gancho</th><th class="num">Posts</th>
+      <th class="num">Média de views</th></tr></thead><tbody>` + d.ganchos.slice(0, 10).map(g => `<tr>
+      <td>${esc(g.gancho)}</td><td class="num">${g.posts}</td><td class="num">${fmt(g.media_views)}</td></tr>`).join("") +
+      "</tbody></table><br>" : "";
+  const posts = [...d.posts].sort((a, b) => (b.metricas.views ?? -1) - (a.metricas.views ?? -1));
+  $("#igResultados").innerHTML = posts.length ? `<table><thead><tr><th>Post</th><th class="num">Views</th>
+      <th class="num">Alcance</th><th class="num">Curtidas</th><th class="num">Coment.</th>
+      <th class="num">Compart.</th><th class="num">Salvos</th></tr></thead><tbody>` + posts.map(p => `<tr>
+      <td><div class="nome" title="${esc(p.video)}">${p.permalink ? `<a href="${esc(p.permalink)}" target="_blank" rel="noopener">${esc(p.gancho)}</a>` : esc(p.gancho)}</div>
+          <span class="info" style="font-size:11px">@${esc(p.username)} · ${esc(p.publicado_em.replace("T", " "))}${p.partes > 1 ? ` · Parte ${p.parte}/${p.partes}` : ""}</span></td>
+      <td class="num">${fmt(p.metricas.views)}</td><td class="num">${fmt(p.metricas.reach)}</td>
+      <td class="num">${fmt(p.metricas.likes)}</td><td class="num">${fmt(p.metricas.comments)}</td>
+      <td class="num">${fmt(p.metricas.shares)}</td><td class="num">${fmt(p.metricas.saved)}</td></tr>`).join("") +
+      "</tbody></table>" : '<div class="vazio">Nenhum post publicado ainda.</div>';
+}
+async function igResultados() {
+  igDesenharResultados(await (await fetch("/api/ig/resultados")).json());
+}
+$("#btnIgMetricas").addEventListener("click", async () => {
+  $("#igMetricasMsg").textContent = "Buscando na Meta…";
+  const d = await (await post("/api/ig/metricas")).json();
+  igDesenharResultados(d);
+  $("#igMetricasMsg").textContent = d.erro ? "⚠ " + d.erro : `${d.atualizados} post(s) atualizados.`;
+});
+
+/* faixa de avisos da tela principal */
+async function carregarAvisos() {
+  let lista = [];
+  try { lista = await (await fetch("/api/avisos")).json(); } catch { return; }
+  $("#avisos").hidden = !lista.length;
+  $("#avisos").innerHTML = lista.map(a => `<div class="aviso ${a.nivel === "erro" ? "erro" : ""}">
+    <span>${a.nivel === "erro" ? "⛔" : "⚠"} ${esc(a.texto)}</span>
+    <button data-abrir-ig>Abrir Instagram</button></div>`).join("");
+}
+$("#avisos").addEventListener("click", e => { if (e.target.hasAttribute("data-abrir-ig")) igAbrir(); });
+carregarAvisos(); setInterval(carregarAvisos, 60000);
 $("#igFila").addEventListener("change", async e => {
   if (!e.target.classList.contains("igLeg")) return;
   const id = e.target.closest("tr").dataset.id;

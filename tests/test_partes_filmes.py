@@ -122,13 +122,12 @@ def test_parte_2_espera_a_parte_1(meta):
         ["publicado", "publicado"]
 
 
-def test_video_acima_de_90s_e_barrado_antes_do_upload(meta, monkeypatch):
+def test_video_de_154s_sobe_o_teto_agora_e_15_min(meta, monkeypatch):
+    # a doc da Meta (10/2026) aceita Reels de ate 15 min por API
     ig.conectar("T")
     _pronto_em_partes("a.mp4", 1)
     monkeypatch.setattr(mf, "duracao", lambda v: 154.0)
-    with pytest.raises(ig.ErroInstagram, match="154s"):
-        ig.publicar(mf.saidas_de(mf.ENTRADA / "a.mp4")[0], "x")
-    assert not any("rupload" in c[1] for c in meta.chamadas)
+    assert ig.publicar(mf.saidas_de(mf.ENTRADA / "a.mp4")[0], "x")["media_id"] == "MEDIA1"
 
 
 def test_horarios_de_quem_posta_a_noite_atravessam_a_meia_noite():
@@ -136,10 +135,13 @@ def test_horarios_de_quem_posta_a_noite_atravessam_a_meia_noite():
     h = ig.horarios(6, cfg, depois_de=datetime(2026, 10, 6, 12, 0))
     assert [x.strftime("%d %H:%M") for x in h] == \
         ["06 22:35", "07 01:35", "07 04:35", "07 07:35", "07 10:35", "07 22:35"]
-    # intervalo que estouraria 24h nao invade a janela seguinte
+    # intervalo que estouraria 24h nao invade a janela seguinte: cada janela de
+    # 5h em 5h a partir das 22:35 so tem 5 horarios (22:35 ... 18:35), nunca 10.
+    # Os da janela de ontem que ainda nao passaram (13:35, 18:35) valem.
     largo = {**cfg, "por_dia": 10, "intervalo_min": 300}
-    h = ig.horarios(6, largo, depois_de=datetime(2026, 10, 6, 12, 0))
-    assert h[5] == datetime(2026, 10, 7, 22, 35)
+    h = ig.horarios(7, largo, depois_de=datetime(2026, 10, 6, 12, 0))
+    assert [x.strftime("%d %H:%M") for x in h] == \
+        ["06 13:35", "06 18:35", "06 22:35", "07 03:35", "07 08:35", "07 13:35", "07 18:35"]
 
 
 def test_reorganizar_reespaca_mantendo_a_ordem(meta):
@@ -201,6 +203,21 @@ def test_tirar_todos_os_pendentes_mantem_publicados(meta):
 
 def test_padrao_de_parte_e_60s():
     assert mf._validar({})["parte_max"] == 60
+
+
+def test_codificacao_segue_a_especificacao_do_reels():
+    cod = mf.codificacao_reels(60)
+    assert cod[cod.index("-b:a") + 1] == "128k" and cod[cod.index("-ar") + 1] == "48000"
+    assert cod[cod.index("-use_editlist") + 1] == "0" and "+faststart" in cod
+    assert cod[cod.index("-g") + 1] == "60"
+    assert mf.kbps_maximo(60) == mf.TETO_KBPS                  # curto: teto normal
+    k = mf.kbps_maximo(900)                                    # 15 min cabe em 280 MB
+    assert (k + 128) * 900 / 8 / 1000 <= mf.TETO_MB
+
+
+def test_parte_max_aceita_ate_15_min():
+    assert mf._validar({"parte_max": 900})["parte_max"] == 900
+    assert mf._validar({"parte_max": 5000})["parte_max"] == 900
 
 
 def test_legenda_do_post_com_e_sem_marcador():

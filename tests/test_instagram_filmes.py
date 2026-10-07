@@ -32,6 +32,10 @@ class MetaFalsa:
         self.chamadas = []
         self.status_container = "FINISHED"
         self.erro_media = None
+        self.falhas_processamento = 0   # quantos uploads devolvem ProcessingFailedError
+        self.erro_comentario = None
+        self.erro_insights = None
+        self.expira = 0                 # expires_at do debug_token
 
     def get(self, url, params=None, **_):
         self.chamadas.append(("GET", url, params))
@@ -48,6 +52,14 @@ class MetaFalsa:
             return Resp({"status_code": self.status_container})
         if url.endswith("/MEDIA1"):
             return Resp({"permalink": "https://instagram.com/reel/abc"})
+        if url.endswith("/debug_token"):
+            return Resp({"data": {"expires_at": self.expira, "data_access_expires_at": 0}})
+        if url.endswith("/MEDIA1/insights"):
+            if self.erro_insights:
+                return Resp({"error": self.erro_insights}, 400)
+            return Resp({"data": [{"name": "views", "values": [{"value": 1500}]},
+                                  {"name": "reach", "values": [{"value": 900}]},
+                                  {"name": "likes", "total_value": {"value": 80}}]})
         return Resp({"error": {"message": "rota desconhecida " + url}}, 400)
 
     def post(self, url, data=None, headers=None, **_):
@@ -59,9 +71,17 @@ class MetaFalsa:
                 return Resp({"error": self.erro_media}, 400)
             return Resp({"id": "CONT1", "uri": "https://rupload.facebook.com/ig-api-upload/CONT1"})
         if "rupload" in url:
+            if self.falhas_processamento:
+                self.falhas_processamento -= 1
+                return Resp({"debug_info": {"retriable": False, "type": "ProcessingFailedError",
+                                            "message": "Request processing failed"}}, 500)
             return Resp({"success": True})
         if url.endswith("/media_publish"):
             return Resp({"id": "MEDIA1"})
+        if url.endswith("/MEDIA1/comments"):
+            if self.erro_comentario:
+                return Resp({"error": self.erro_comentario}, 400)
+            return Resp({"id": "COMENT1"})
         return Resp({"error": {"message": "rota desconhecida"}}, 400)
 
 
@@ -212,3 +232,204 @@ def test_conectar_sem_instagram_com_permissoes_ok(meta, monkeypatch):
     monkeypatch.setattr(ig.requests, "get", _so_paginas_sem_ig(list(ig.PERMISSOES)))
     with pytest.raises(ig.ErroInstagram, match="nao foi marcada"):
         ig.conectar("T")
+
+
+# ------------------------------------------------------------------ 10/2026
+
+def _pronto_em_partes(nome, n):
+    (mf.ENTRADA / nome).write_bytes(b"original")
+    for k in range(1, n + 1):
+        mf.saida_parte(mf.ENTRADA / nome, k, n).write_bytes(b"x" * 1234)
+
+
+def test_app_fica_guardado_e_nunca_vai_pro_navegador(meta):
+    ig.conectar("T1", "app", "segredo")
+    publica = ig.config_publica()
+    assert publica["app_salvo"] is True and "app_secret" not in publica
+    meta.chamadas.clear()
+    ig.conectar("T2")                                           # sem preencher de novo
+    troca = next(c for c in meta.chamadas if c[1].endswith("/oauth/access_token"))
+    assert troca[2]["client_secret"] == "segredo" and troca[2]["fb_exchange_token"] == "T2"
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    assert "segredo" not in api.get("/api/ig").text
+
+
+def test_conectar_avisa_quando_o_token_vai_vencer(meta):
+    meta.expira = int(datetime.now().timestamp()) + 3600        # token curto, sem app
+    cfg = ig.conectar("T")
+    assert "vence em poucas horas" in cfg["aviso"]
+    meta.expira = 0
+    assert "aviso" not in ig.conectar("T", "app", "segredo")
+
+
+def test_meta_nao_processou_tenta_versao_leve(meta, monkeypatch):
+    ig.conectar("T")
+    _pronto()
+    feitas = []
+
+    def leve(origem, destino):
+        feitas.append(origem)
+        destino.write_bytes(b"y" * 500)
+        return destino
+    monkeypatch.setattr(mf, "recodificar_leve", leve)
+    meta.falhas_processamento = 1
+    r = ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
+    assert r["media_id"] == "MEDIA1" and len(feitas) == 1
+    uploads = [c for c in meta.chamadas if "rupload" in c[1]]
+    assert [u[2] for u in uploads] == [1234, 500]               # 2a vez sobe o arquivo leve
+    assert not list(mf.SAIDA.glob("*.leve.*"))                  # e apaga o temporario
+
+
+def test_meta_nao_processou_nem_a_leve_vira_erro_explicado(meta, monkeypatch):
+    ig.conectar("T")
+    _pronto()
+    monkeypatch.setattr(mf, "recodificar_leve",
+                        lambda o, d: (d.write_bytes(b"y"), d)[1])
+    meta.falhas_processamento = 2
+    with pytest.raises(ig.ErroInstagram, match="nem na versao") as e:
+        ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
+    assert e.value.fatal
+
+
+def test_video_acima_de_15_min_e_recusado_antes_do_upload(meta, monkeypatch):
+    ig.conectar("T")
+    _pronto()
+    monkeypatch.setattr(mf, "duracao", lambda v: 901.0)
+    with pytest.raises(ig.ErroInstagram, match="15 min"):
+        ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "x")
+    assert not any("rupload" in c[1] for c in meta.chamadas)
+
+
+def test_primeiro_comentario_e_falha_dele_nao_derruba_o_post(meta):
+    ig.conectar("T")
+    _pronto()
+    video = mf.saida_de(mf.ENTRADA / "a.mp4")
+    ig.publicar(video, "x", comentario="Qual o filme?")
+    c = next(c for c in meta.chamadas if c[1].endswith("/comments"))
+    assert c[2]["message"] == "Qual o filme?"
+    meta.erro_comentario = {"code": 10, "message": "permission"}
+    r = ig.publicar(video, "x", comentario="Qual o filme?")
+    assert r["media_id"] == "MEDIA1" and "instagram_manage_comments" in r["comentario_erro"]
+
+
+def test_fila_guarda_media_id_e_comentario_da_config(meta):
+    ig.conectar("T")
+    ig.salvar_config({"comentario": "Comenta"})
+    _pronto()
+    ig.agendar([{"video": "a.mp4", "legenda": "x"}])
+    ig.processar_vencidos(datetime.now() + timedelta(days=30))
+    item = ig.fila()[0]
+    assert item["status"] == "publicado" and item["media_id"] == "MEDIA1"
+    assert any(c[1].endswith("/comments") for c in meta.chamadas)
+
+
+def test_parte_seguinte_fica_bloqueada_e_volta_junto(meta):
+    ig.conectar("T")
+    _pronto_em_partes("a.mp4", 3)
+    ig.agendar([{"video": "a.mp4", "parte": k, "partes": 3, "legenda": str(k)}
+                for k in range(1, 4)])
+    p1, p2, p3 = sorted(ig.fila(), key=lambda x: x["parte"])
+    ig._atualizar(p1["id"], status="erro", erro="Token expirado ou invalido")
+    assert ig.bloqueados() == {p2["id"], p3["id"]}
+    fila = ig.repetir([p1["id"]])
+    por_parte = {x["parte"]: x for x in fila}
+    assert all(x["status"] == "pendente" and x["tentativas"] == 0 for x in fila)
+    assert por_parte[1]["quando"] < por_parte[2]["quando"] < por_parte[3]["quando"]
+    assert ig.bloqueados() == set()
+
+
+def test_repetir_pela_api_todos_com_erro(meta):
+    ig.conectar("T")
+    _pronto("a.mp4")
+    _pronto("b.mp4")
+    ig.agendar([{"video": v, "legenda": "x"} for v in ("a.mp4", "b.mp4")])
+    for x in ig.fila():
+        ig._atualizar(x["id"], status="erro", erro="falhou")
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    r = api.post("/api/ig/repetir", json={"todos": True}).json()
+    assert r["repetidos"] == 2 and all(x["status"] == "pendente" for x in r["fila"])
+    assert len({x["quando"] for x in r["fila"]}) == 2           # horarios diferentes
+
+
+def _duas_contas(meta, monkeypatch):
+    def get(url, params=None, **k):
+        if url.endswith("/me/accounts"):
+            return Resp({"data": [
+                {"name": "A", "access_token": "TA",
+                 "instagram_business_account": {"id": "1", "username": "conta_a"}},
+                {"name": "B", "access_token": "TB",
+                 "instagram_business_account": {"id": "2", "username": "conta_b"}}]})
+        return MetaFalsa.get(meta, url, params)
+    monkeypatch.setattr(ig.requests, "get", get)
+    ig.conectar("T")
+
+
+def test_distribuir_reparte_videos_e_mantem_partes_juntas(meta, monkeypatch):
+    _duas_contas(meta, monkeypatch)
+    itens = [{"video": "a.mp4", "parte": 1, "partes": 2, "legenda": "x"},
+             {"video": "a.mp4", "parte": 2, "partes": 2, "legenda": "x"},
+             {"video": "b.mp4", "legenda": "x"}, {"video": "c.mp4", "legenda": "x"}]
+    fila = ig.agendar(itens, distribuir=True)
+    conta_de = {}
+    for x in fila:
+        conta_de.setdefault(x["video"], set()).add(x["username"])
+    assert len(conta_de["a.mp4"]) == 1                          # partes na mesma conta
+    assert {x["username"] for x in fila} == {"conta_a", "conta_b"}
+    assert len(ig.agendar(itens, distribuir=True)) == 4         # nao agenda de novo
+
+
+def test_metricas_e_media_por_gancho(meta):
+    ig.conectar("T")
+    _pronto()
+    ig.agendar([{"video": "a.mp4", "legenda": "x", "gancho": "Ninguem esperava"}])
+    ig.processar_vencidos(datetime.now() + timedelta(days=30))
+    assert ig.atualizar_metricas() == {"atualizados": 1, "erro": None}
+    assert ig.atualizar_metricas()["atualizados"] == 0          # ja atualizado ha pouco
+    res = ig.resultados()
+    assert res["posts"][0]["metricas"] == {"views": 1500, "reach": 900, "likes": 80}
+    assert res["ganchos"] == [{"gancho": "Ninguem esperava", "posts": 1, "media_views": 1500}]
+
+
+def test_metricas_sem_permissao_explica(meta):
+    ig.conectar("T")
+    _pronto()
+    ig.agendar([{"video": "a.mp4", "legenda": "x"}])
+    ig.processar_vencidos(datetime.now() + timedelta(days=30))
+    meta.erro_insights = {"code": 10, "message": "permission"}
+    assert "instagram_manage_insights" in ig.atualizar_metricas(forcar=True)["erro"]
+
+
+def test_avisos_de_token_e_notificacao_sem_repetir(meta, monkeypatch):
+    agora = datetime.now()
+    meta.expira = int((agora + timedelta(days=1)).timestamp())
+    ig.conectar("T", "app", "segredo")
+    assert any("vence em" in a["texto"] for a in ig.avisos(agora))
+    mandados = []
+    from scripts import notificar
+    monkeypatch.setattr(notificar, "windows", lambda t, x: mandados.append(x) or True)
+    assert ig.notificar_avisos(agora) == 1
+    assert ig.notificar_avisos(agora + timedelta(hours=1)) == 0  # nao repete toda hora
+    assert ig.notificar_avisos(agora + timedelta(hours=13)) == 1
+    vencido = [a for a in ig.avisos(agora + timedelta(days=2)) if a["nivel"] == "erro"]
+    assert vencido and "venceu" in vencido[0]["texto"]
+
+
+def test_horarios_da_madrugada_da_janela_de_ontem():
+    cfg = {**ig.CONFIG_PADRAO, "por_dia": 5, "inicio": "22:35", "intervalo_min": 180}
+    h = ig.horarios(2, cfg, depois_de=datetime(2026, 10, 7, 2, 0))
+    assert [x.strftime("%d %H:%M") for x in h] == ["07 04:35", "07 07:35"]
+
+
+def test_agendar_com_legenda_da_ia(meta, monkeypatch):
+    ig.conectar("T")
+    ig.salvar_config({"legenda_ia": True})
+    _pronto("a.mp4")
+    _pronto("b.mp4")
+    monkeypatch.setattr(pf.lia, "gerar",
+                        lambda pedidos, fixas: ["Texto da IA" if p["video"].name == "a.mp4"
+                                                else None for p in pedidos])
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    r = api.post("/api/ig/agendar", json={"videos": ["a.mp4", "b.mp4"]}).json()
+    leg = {x["video"]: x["legenda"] for x in r["fila"]}
+    assert leg["a.mp4"] == "Texto da IA" and "#filmes" in leg["b.mp4"]   # b cai no modelo
+    assert r["legendas_sem_ia"] == 1

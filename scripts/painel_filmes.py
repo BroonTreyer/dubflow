@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from scripts import instagram_filmes as ig
 from scripts import legenda_filmes as lf
+from scripts import legenda_ia_filmes as lia
 from scripts import molde_filmes as mf
 
 PORTA = 8035   # 8030 e do painel principal do dubflow (PORT no .env)
@@ -450,7 +451,64 @@ def ig_estado() -> dict:
             estado[x["video"]] = (v.exists() and _pronto(v, molde), len(mf.saidas_de(v)))
         ok, n = estado[x["video"]]
         x["desatualizado"] = not ok or n != x.get("partes", 1)
-    return {"config": ig.config_publica(), "fila": fila}
+    parados = ig.bloqueados(fila)
+    for x in fila:
+        x["bloqueado"] = x["id"] in parados
+        x.pop("metricas", None)  # numeros vao pela tela de resultados
+    return {"config": ig.config_publica(), "fila": fila, "avisos": ig.avisos()}
+
+
+@app.get("/api/avisos")
+def avisos() -> list[dict]:
+    """Faixa de avisos da tela principal (token vencendo, posts com erro)."""
+    return ig.avisos()
+
+
+@app.post("/api/ig/esquecer-app")
+def ig_esquecer_app() -> dict:
+    return ig.esquecer_app()
+
+
+@app.post("/api/ig/repetir")
+def ig_repetir(dados: dict) -> dict:
+    """Posts com erro (e as partes seguintes paradas) voltam para a fila."""
+    ids = [str(i) for i in dados.get("ids") or []]
+    if dados.get("todos"):
+        ids = [x["id"] for x in ig.fila() if x["status"] == "erro"]
+    if not ids:
+        raise HTTPException(400, "nenhum post com erro selecionado")
+    antes = {x["id"] for x in ig.fila() if x["status"] == "erro"}
+    fila = ig.repetir(ids)
+    return {"fila": fila, "repetidos": len(antes & set(ids))}
+
+
+@app.post("/api/ig/legenda-ia")
+def ig_legenda_ia(dados: dict) -> dict:
+    """Reescreve com a IA a legenda de um post pendente."""
+    item_id = str(dados.get("id", ""))
+    item = next((x for x in ig.fila() if x["id"] == item_id and x["status"] == "pendente"), None)
+    if item is None:
+        raise HTTPException(409, "so da para reescrever post pendente")
+    video = mf.ENTRADA / item["video"]
+    gancho = item.get("gancho") or mf.gancho_de(video, None, mf.carregar_molde())
+    texto = lia.gerar([{"video": video, "gancho": gancho, "parte": item.get("parte", 1),
+                        "partes": item.get("partes", 1)}], ig.config()["hashtags"])[0]
+    if not texto:
+        raise HTTPException(502, "a IA nao respondeu agora; tente de novo em instantes")
+    ig._atualizar(item_id, legenda=texto)
+    return {"fila": ig.fila()}
+
+
+@app.get("/api/ig/resultados")
+def ig_resultados() -> dict:
+    return ig.resultados()
+
+
+@app.post("/api/ig/metricas")
+def ig_metricas() -> dict:
+    """Busca agora os numeros de todos os posts recentes."""
+    r = ig.atualizar_metricas(forcar=True)
+    return {**r, **ig.resultados()}
 
 
 @app.post("/api/ig/conectar")
@@ -494,19 +552,34 @@ def ig_agendar(dados: dict) -> dict:
     if not prontos:
         raise HTTPException(400, "nenhum dos selecionados esta renderizado no formato atual "
                                  "(videos longos precisam ser renderizados de novo em partes)")
+    distribuir = bool(dados.get("distribuir", cfg["distribuir"]))
+    ja = {x["video"] for x in ig.fila() if x["status"] in ("pendente", "publicando")
+          and (distribuir or x["ig_id"] == (dados.get("ig_id") or cfg["ativa"]))}
     itens = []
     for v in prontos:
         n = len(mf.saidas_de(v))
         gancho = mf.gancho_de(v, None, molde)
-        itens += [{"video": v.name, "parte": k, "partes": n,
+        itens += [{"video": v.name, "parte": k, "partes": n, "gancho": gancho,
                    "legenda": ig.montar_legenda(gancho, cfg, k, n)} for k in range(1, n + 1)]
+    sem_ia = 0
+    if cfg["legenda_ia"]:
+        # so os que vao de fato entrar na fila: nao gasta IA com video ja agendado
+        novos = [i for i in itens if i["video"] not in ja]
+        textos = lia.gerar([{"video": mf.ENTRADA / i["video"], "gancho": i["gancho"],
+                             "parte": i["parte"], "partes": i["partes"]} for i in novos],
+                           cfg["hashtags"])
+        for i, t in zip(novos, textos):
+            if t:
+                i["legenda"] = t
+            else:
+                sem_ia += 1
     try:
         antes = len(ig.fila())
-        fila = ig.agendar(itens, dados.get("ig_id"))
+        fila = ig.agendar(itens, dados.get("ig_id"), distribuir=distribuir)
     except ig.ErroInstagram as exc:
         raise _erro_ig(exc)
     return {"agendados": len(fila) - antes, "ignorados_sem_render": len(alvos) - len(prontos),
-            "fila": fila}
+            "legendas_sem_ia": sem_ia, "fila": fila}
 
 
 @app.post("/api/ig/reorganizar")
@@ -621,8 +694,24 @@ def _configurar_log() -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+def _sem_janelas() -> None:
+    """No pythonw, cada ffmpeg/ffprobe/whisper filho ganharia um console proprio
+    (pisca uma janela preta por processo). CREATE_NO_WINDOW vira o padrao de todo
+    subprocess do painel, inclusive os de molde/legenda/instagram."""
+    if sys.platform != "win32":
+        return
+
+    class _PopenSemJanela(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+            super().__init__(*args, **kwargs)
+
+    subprocess.Popen = _PopenSemJanela
+
+
 if __name__ == "__main__":
     _configurar_log()
+    _sem_janelas()
     if "--sem-navegador" not in sys.argv:
         threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{PORTA}")).start()
     log.info("painel subindo na porta %s", PORTA)

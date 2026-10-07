@@ -70,10 +70,11 @@ PADRAO = {
     "margem": 60,
     "cantos_video": 0,
     "legendar_padrao": False,   # legenda automatica em quem nao tem escolha propria
-    # Video mais longo que isso vira Parte 1, Parte 2... O teto pratico do upload
-    # direto do Instagram NAO e o de 90s: medido em 05/10/2026, um trecho real de
-    # 77s volta ProcessingFailedError sempre (a Meta desiste de processar por volta
-    # de 33s de requisicao) e o mesmo trecho com 60s passa em 23s.
+    # Video mais longo que isso vira Parte 1, Parte 2... O Reels por API aceita ate
+    # 15 min, mas em 05/10/2026 o envio direto recusava um trecho real de 77s
+    # (ProcessingFailedError) com o render ANTIGO (edit list, quadro-chave a cada
+    # 8s). O render atual segue a especificacao; scripts/teste_envio_ig.py mede o
+    # teto de verdade na conta antes de subir este padrao.
     "parte_max": 60,
     "rotulo_parte": "PARTE {n}",
     "cta_ultima": "SEGUE PRA MAIS FILMES",
@@ -101,7 +102,7 @@ def carregar_molde() -> dict:
 
 LIMITES = {"tamanho_perfil": (20, 120), "tamanho_gancho_max": (40, 160),
            "tamanho_cta": (20, 90), "margem": (0, 300), "cantos_video": (0, 120),
-           "parte_max": (10, 90)}
+           "parte_max": (10, 900)}
 
 
 def _validar(molde: dict) -> dict:
@@ -407,6 +408,54 @@ def previa(molde: dict, gancho: str, quadro: Image.Image,
     return img
 
 
+# Especificacao do Reels por API (developers.facebook.com, ig-user/media, 10/2026):
+# MP4 sem edit lists e com moov no inicio; H.264 progressivo, GOP fechado, 4:2:0;
+# 23-60 fps; ate 25 Mbps; AAC ate 48 kHz e 128 kbps; ate 15 min e 300 MB.
+# O render antigo saia com edit list, AAC 160k e quadro-chave a cada 8s, e a Meta
+# levava tanto para processar que o envio direto desistia em trechos de 77s.
+TETO_MB = 280          # folga sob os 300 MB da Meta
+TETO_KBPS = 8000
+
+
+def kbps_maximo(segundos: float) -> int:
+    """Teto de bitrate do video para o arquivo caber em TETO_MB nessa duracao."""
+    if segundos <= 0:
+        return TETO_KBPS
+    cabe = TETO_MB * 8 * 1000 / segundos - 128   # menos o audio
+    return max(600, min(TETO_KBPS, int(cabe * 0.92)))   # 8% para o conteiner
+
+
+def codificacao_reels(segundos: float) -> list[str]:
+    teto = kbps_maximo(segundos)
+    return [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", "30",
+        "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p",
+        "-maxrate", f"{teto}k", "-bufsize", f"{teto * 2}k",
+        "-g", "60", "-keyint_min", "30",            # quadro-chave a cada 2s
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+        "-use_editlist", "0", "-movflags", "+faststart",
+    ]
+
+
+LEVE_KBPS = 2000
+
+
+def recodificar_leve(origem: Path, destino: Path) -> Path:
+    """Copia mais leve de um render pronto (bitrate fixo, mesma especificacao): a
+    segunda tentativa quando a Meta desiste de processar o envio direto."""
+    seg = duracao(origem)
+    kbps = min(LEVE_KBPS, kbps_maximo(seg))
+    cod = codificacao_reels(seg)
+    i = cod.index("-crf")
+    cod[i:i + 2] = ["-b:v", f"{kbps}k"]
+    cod[cod.index("-maxrate") + 1] = f"{kbps}k"
+    cod[cod.index("-bufsize") + 1] = f"{kbps * 2}k"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(origem),
+                    "-map", "0:v:0", "-map", "0:a:0?", *cod, str(destino)],
+                   check=True, capture_output=True)
+    return destino
+
+
 def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
                corte: dict | None = None,
                progresso: Callable[[float], None] | None = None,
@@ -459,8 +508,7 @@ def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
             *entradas,
             "-filter_complex", filtro,
             "-map", "[out]", "-map", "1:a:0?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", "30",
-            "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+            *codificacao_reels(total),
             str(parcial),
         ]
         with tempfile.TemporaryFile() as erros:

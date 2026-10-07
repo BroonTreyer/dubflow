@@ -17,3 +17,6 @@ __pycache__/
 # Backups do .env (contem chaves)
 .env.bak-*
 filmes/
+
+# binarios baixados (cloudflared etc.)
+ferramentas/
