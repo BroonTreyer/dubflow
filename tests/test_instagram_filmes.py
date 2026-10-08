@@ -223,6 +223,24 @@ def test_nao_apaga_video_com_post_agendado(meta):
     assert r.json()["detail"] == {"agendados": 1, "posts": 1}      # o navegador pergunta
 
 
+def test_baixar_renders_em_zip(meta):
+    import io
+    import zipfile
+    _pronto("a.mp4")
+    _pronto_em_partes("b.mp4", 2)
+    (mf.ENTRADA / "c.mp4").write_bytes(b"sem render")
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    r = api.get("/api/baixar-renders")
+    assert r.status_code == 200 and "filmes_renderizados_" in r.headers["content-disposition"]
+    nomes = sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist())
+    assert nomes == ["a_molde.mp4", "b_molde_p1.mp4", "b_molde_p2.mp4"]
+    r = api.get("/api/baixar-renders", params={"v": ["b.mp4"]})
+    assert sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist()) == \
+        ["b_molde_p1.mp4", "b_molde_p2.mp4"]
+    assert api.get("/api/baixar-renders", params={"v": ["c.mp4"]}).status_code == 404
+    assert not list(mf.RAIZ.glob("*.baixando.zip"))              # temporario apagado
+
+
 def test_apagar_tirando_da_fila_quando_confirmado(meta):
     ig.conectar("T")
     _pronto("a.mp4")

@@ -291,6 +291,13 @@
       <button id="btnParar" hidden>Parar</button>
     </div>
 
+    <h2>Baixar</h2>
+    <div class="rodape">
+      <button class="prim" id="btnBaixarTodos">⬇ Baixar todos os renderizados</button>
+      <button id="btnBaixarSel">⬇ Baixar selecionados</button>
+    </div>
+    <div class="info" id="txtBaixar" style="margin-top:8px"></div>
+
     <h2>Limpeza</h2>
     <div class="rodape">
       <button id="btnLimparRenders">Apagar renders dos selecionados</button>
@@ -1213,6 +1220,27 @@ async function legenda(valor, texto) {
 $("#btnCcLiga").addEventListener("click", () => legenda(true, "Legenda ligada"));
 $("#btnCcDesliga").addEventListener("click", () => legenda(false, "Legenda desligada"));
 $("#btnCcPadrao").addEventListener("click", () => legenda(null, "Seguindo o padrão"));
+
+/* ------------------------------------------------------------ baixar */
+
+function baixar(nomes) {
+  const prontos = videos.filter(v => v.partes_prontas > 0 && (!nomes || nomes.includes(v.nome)));
+  if (!prontos.length) {
+    $("#txtBaixar").textContent = nomes ? "Nenhum dos selecionados está renderizado." : "Nenhum vídeo renderizado ainda.";
+    return;
+  }
+  const arquivos = prontos.reduce((n, v) => n + v.partes_prontas, 0);
+  const q = nomes ? "?" + prontos.map(v => "v=" + encodeURIComponent(v.nome)).join("&") : "";
+  $("#txtBaixar").textContent = `Preparando ${arquivos} arquivo(s) de ${prontos.length} vídeo(s) num .zip… o download começa sozinho.`;
+  const a = document.createElement("a");
+  a.href = "/api/baixar-renders" + q; a.download = "";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+$("#btnBaixarTodos").addEventListener("click", () => baixar(null));
+$("#btnBaixarSel").addEventListener("click", () => {
+  if (!sel.size) { $("#txtBaixar").textContent = "Selecione vídeos na lista primeiro."; return; }
+  baixar([...sel]);
+});
 
 /* ------------------------------------------------------------ limpeza */
 

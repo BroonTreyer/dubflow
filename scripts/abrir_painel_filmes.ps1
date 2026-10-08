@@ -18,7 +18,8 @@
     Para desfazer: apagar 'Painel de Filmes.lnk' da pasta shell:startup.
 #>
 [CmdletBinding()]
-param([switch]$CriarAtalho, [switch]$Reiniciar, [switch]$SemNavegador, [switch]$IniciarComWindows)
+param([switch]$CriarAtalho, [switch]$Reiniciar, [switch]$SemNavegador, [switch]$IniciarComWindows,
+      [switch]$Forcar)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -62,7 +63,22 @@ function Processos {
         Where-Object { $_.Name -match '^pythonw?\.exe$' -and $_.CommandLine -match 'painel_filmes' })
 }
 
+function Ocupado {
+    # derrubar no meio corta o render (video pela metade) ou um post sendo publicado
+    try {
+        if ((Invoke-RestMethod "$url/api/status" -TimeoutSec 5).rodando) { return 'tem render rodando' }
+        $ig = Invoke-RestMethod "$url/api/ig" -TimeoutSec 5
+        if (@($ig.fila | Where-Object { $_.status -eq 'publicando' }).Count) { return 'tem post sendo publicado' }
+    } catch { }
+    return $null
+}
+
 if ($Reiniciar) {
+    $motivo = if ($Forcar) { $null } else { Ocupado }
+    if ($motivo) {
+        Write-Host "  nao reiniciei: $motivo. Espere terminar ou use -Forcar." -ForegroundColor Yellow
+        exit 2
+    }
     Processos | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 800
 }

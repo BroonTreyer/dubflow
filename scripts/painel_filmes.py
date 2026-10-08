@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import io
 import logging
+import secrets
 import subprocess
 import sys
 import threading
 import webbrowser
+import zipfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -26,7 +28,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Query, UploadFile
+from starlette.background import BackgroundTask
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from PIL import Image, ImageDraw, ImageFont
@@ -280,6 +283,32 @@ def _nome_livre(destino: Path) -> Path:
         outros = [v for v in mf.listar_videos() if v.stem == destino.stem]
         n += 1
     return destino
+
+
+@app.get("/api/baixar-renders")
+def baixar_renders(v: list[str] = Query(default=[])) -> FileResponse:
+    """Os videos prontos (ja no molde) num .zip: os pedidos em `v`, ou todos.
+
+    ZIP sem compressao: MP4 ja e comprimido, e assim o zip sai na hora em vez de
+    gastar minutos de CPU para ganhar quase nada. O arquivo temporario some
+    depois do download (ou no proximo boot, se o painel cair no meio).
+    """
+    videos = [_video(n) for n in v] if v else mf.listar_videos()
+    arquivos = [s for x in videos for s in mf.saidas_de(x)]
+    if not arquivos:
+        raise HTTPException(404, "nenhum video renderizado para baixar")
+    tmp = mf.RAIZ / f"renders_{secrets.token_hex(4)}.baixando.zip"
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+            for a in arquivos:
+                z.write(a, a.name)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    nome = f"filmes_renderizados_{datetime.now():%Y-%m-%d_%H%M}.zip"
+    log.info("zip de %d render(s) de %d video(s) para baixar", len(arquivos), len(videos))
+    return FileResponse(tmp, filename=nome, media_type="application/zip",
+                        background=BackgroundTask(tmp.unlink, missing_ok=True))
 
 
 @app.get("/saida/{nome}")
@@ -680,7 +709,8 @@ def limpar(dados: dict) -> dict:
 
 def _limpar_orfaos() -> None:
     """Sobras de render/upload interrompido (queda de energia, processo morto)."""
-    for pasta, padrao in ((mf.SAIDA, "*.parcial.mp4"), (mf.ENTRADA, "*.enviando")):
+    for pasta, padrao in ((mf.SAIDA, "*.parcial.mp4"), (mf.ENTRADA, "*.enviando"),
+                          (mf.RAIZ, "*.baixando.zip")):
         if pasta.exists():
             for arq in pasta.glob(padrao):
                 try:
