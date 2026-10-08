@@ -432,8 +432,37 @@ def codificacao_reels(segundos: float) -> list[str]:
         "-maxrate", f"{teto}k", "-bufsize", f"{teto * 2}k",
         "-g", "60", "-keyint_min", "30",            # quadro-chave a cada 2s
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+        *SEM_METADADOS,
         "-use_editlist", "0", "-movflags", "+faststart",
     ]
+
+
+# Nada de metadados no arquivo final: sem titulo/comentario/data herdados do
+# original, sem "encoder=Lavf/Lavc" e sem o SEI do x264 (texto "x264 - core ...
+# opcoes" gravado dentro do proprio video). Ficam so as caixas que o MP4 exige
+# (handler generico VideoHandler/SoundHandler, idioma "und").
+SEM_METADADOS = [
+    "-map_metadata", "-1", "-map_chapters", "-1",
+    "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+    "-metadata:s:v", "encoder=", "-metadata:s:a", "encoder=",
+    "-bsf:v", "filter_units=remove_types=6",
+]
+
+
+def limpar_metadados(arquivo: Path) -> None:
+    """Tira os metadados de um MP4 ja pronto, sem recodificar (copia os fluxos).
+    Escreve num temporario e so troca no fim: se cair no meio, o original fica."""
+    tmp = arquivo.with_name(arquivo.stem + ".limpando.parcial.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(arquivo), "-map", "0",
+             "-c", "copy", *SEM_METADADOS, "-use_editlist", "0", "-movflags", "+faststart",
+             str(tmp)],
+            check=True, capture_output=True)
+        tmp.replace(arquivo)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def renderizar(video: Path, saida: Path, molde: dict, gancho: str,

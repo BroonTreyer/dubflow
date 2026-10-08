@@ -222,6 +222,38 @@ def test_codificacao_segue_a_especificacao_do_reels():
     assert (k + 128) * 900 / 8 / 1000 <= mf.TETO_MB
 
 
+def _etiquetas(arquivo):
+    import json
+    import subprocess
+    d = json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags:stream_tags", "-of", "json",
+         str(arquivo)], capture_output=True, text=True, check=True).stdout)
+    tags = dict(d.get("format", {}).get("tags", {}))
+    for s in d.get("streams", []):
+        tags.update(s.get("tags", {}))
+    return tags
+
+
+def test_render_e_limpeza_saem_sem_metadados(tmp_path):
+    import subprocess
+    sujo = tmp_path / "sujo.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=64x64:d=1:r=30",
+         "-f", "lavfi", "-i", "sine=d=1", "-c:v", "libx264", "-c:a", "aac", "-shortest",
+         "-metadata", "title=Filme Original", "-metadata", "comment=@perfil_de_origem",
+         "-metadata", "creation_time=2025-01-01T00:00:00Z", str(sujo)], check=True)
+    assert "title" in _etiquetas(sujo) and b"x264 - core" in sujo.read_bytes()
+    limpo = tmp_path / "limpo.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(sujo),
+                    *mf.codificacao_reels(1), str(limpo)], check=True)
+    mf.limpar_metadados(sujo)
+    for f in (limpo, sujo):
+        tags = _etiquetas(f)
+        assert not {"title", "comment", "creation_time", "encoder"} & set(tags), tags
+        assert b"x264 - core" not in f.read_bytes() and b"Lavf" not in f.read_bytes()
+    assert not list(tmp_path.glob("*.parcial.mp4"))
+
+
 def test_parte_max_aceita_ate_15_min():
     assert mf._validar({"parte_max": 900})["parte_max"] == 900
     assert mf._validar({"parte_max": 5000})["parte_max"] == 900
