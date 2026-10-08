@@ -53,7 +53,7 @@ def main() -> None:
     modo = "link temporario" if args.link else "envio direto"
     print(f"conta @{conta['username']} | {modo} | video {video.name} ({total:.0f}s)\n")
     if args.link and args.duracoes == p.get_default("duracoes"):
-        args.duracoes = f"77,{total:.0f}"   # o que o envio direto nao aguenta
+        args.duracoes = f"77,{int(total)}"   # o que o envio direto nao aguenta (int: 154,6 -> 154)
     with tempfile.TemporaryDirectory() as tmp:
         for seg in (float(s) for s in args.duracoes.split(",")):
             if seg > total:
