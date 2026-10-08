@@ -32,6 +32,7 @@ from pathlib import Path
 
 import requests
 
+from scripts import link_publico
 from scripts import molde_filmes as mf
 
 log = logging.getLogger("instagram_filmes")
@@ -40,6 +41,9 @@ GRAPH = "https://graph.facebook.com/v23.0"
 TENTATIVAS = 3
 DURACAO_MAX = 900.0                  # 15 min: teto do Reels por API (doc da Meta, 10/2026)
 TAMANHO_MAX = 300 * 1024 * 1024      # 300 MB, idem
+# acima disso o envio direto nao passa (a Meta desiste de processar em ~34s, medido
+# 07/10/2026): vai por link temporario (scripts/link_publico.py)
+LIMITE_DIRETO = 62.0
 ESPERA_REPETIR = timedelta(minutes=10)
 METRICAS = ("views", "reach", "likes", "comments", "shares", "saved", "total_interactions")
 METRICAS_CADA = timedelta(hours=6)
@@ -173,8 +177,9 @@ def _explicar(corpo: dict) -> ErroInstagram:
         # passa. Arquivo mais leve nao resolve: so parte mais curta.
         return ErroInstagram(
             "A Meta nao processa video acima de ~60s no envio direto (a duracao conta, "
-            "nao o tamanho). Diminua 'Duracao maxima de cada parte' no molde para 60s, "
-            "renderize de novo e agende de novo.", fatal=True, processamento=True)
+            "nao o tamanho). Sem o envio por link (ferramentas/cloudflared.exe), diminua "
+            "'Duracao maxima de cada parte' no molde para 60s e renderize de novo.",
+            fatal=True, processamento=True)
     erro = corpo.get("error") or {}
     codigo, msg = erro.get("code"), erro.get("message", "") or str(corpo)
     sub = erro.get("error_subcode")
@@ -359,6 +364,20 @@ def _esperar(container: str, token: str, espera_max: int) -> None:
     raise ErroInstagram(f"processamento demorou demais ({status})")
 
 
+def _subir_por_link(conta: dict, video: Path, legenda: str, espera_max: int) -> str:
+    """A Meta BAIXA o video de um link temporario e processa com calma (ate 15 min).
+    O link so existe ate o container ficar pronto."""
+    try:
+        with link_publico.compartilhar(video) as url:
+            criado = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media", data={
+                "media_type": "REELS", "video_url": url, "caption": legenda[:2200],
+                "share_to_feed": "true", "access_token": conta["token"]}, timeout=60))
+            _esperar(criado["id"], conta["token"], espera_max)
+            return criado["id"]
+    except link_publico.ErroLink as exc:
+        raise ErroInstagram(f"link temporario para a Meta baixar o video falhou: {exc}")
+
+
 def publicar(video: Path, legenda: str, ig_id: str | None = None,
              espera_max: int = 1800, comentario: str | None = None) -> dict:
     """Sobe o arquivo e publica como Reels. Devolve {"media_id", "permalink"} e, se o
@@ -373,8 +392,17 @@ def publicar(video: Path, legenda: str, ig_id: str | None = None,
     if video.stat().st_size > TAMANHO_MAX:
         raise ErroInstagram("o arquivo passa de 300 MB (limite do Reels): renderize de novo, "
                             "o render atual ajusta a qualidade para caber", fatal=True)
-    container = _subir(conta, video, legenda)
-    _esperar(container, token, espera_max)
+    if duracao <= LIMITE_DIRETO or not link_publico.disponivel():
+        try:
+            container = _subir(conta, video, legenda)
+            _esperar(container, token, espera_max)
+        except ErroInstagram as exc:
+            if not (exc.processamento and link_publico.disponivel()):
+                raise
+            log.warning("envio direto nao processou %s; indo por link", video.name)
+            container = _subir_por_link(conta, video, legenda, espera_max)
+    else:
+        container = _subir_por_link(conta, video, legenda, espera_max)
 
     media_id = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media_publish", data={
         "creation_id": container, "access_token": token}, timeout=60))["id"]

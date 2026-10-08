@@ -85,6 +85,8 @@ def meta(pastas, monkeypatch):  # noqa: F811
     monkeypatch.setattr(ig.requests, "post", falsa.post)
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     monkeypatch.setattr(mf, "duracao", lambda v: 30.0)
+    monkeypatch.setattr(ig.link_publico, "compartilhar", falsa.compartilhar)
+    monkeypatch.setattr(ig.link_publico, "disponivel", lambda: True)
     return falsa
 
 

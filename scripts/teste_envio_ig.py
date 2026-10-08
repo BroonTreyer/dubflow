@@ -8,6 +8,7 @@ Meta descarta containers nao publicados em 24h).
 Uso (na pasta dubflow, com o painel conectado a uma conta):
     .venv\\Scripts\\python.exe -m scripts.teste_envio_ig
     .venv\\Scripts\\python.exe -m scripts.teste_envio_ig --duracoes 60,120,300 --video nome.mp4
+    .venv\\Scripts\\python.exe -m scripts.teste_envio_ig --link   # pelo link temporario
 """
 
 from __future__ import annotations
@@ -22,11 +23,14 @@ from scripts import instagram_filmes as ig
 from scripts import molde_filmes as mf
 
 
-def medir(conta: dict, arquivo: Path) -> tuple[str, float]:
+def medir(conta: dict, arquivo: Path, link: bool = False) -> tuple[str, float]:
     inicio = time.time()
     try:
-        container = ig._subir(conta, arquivo, "teste de envio (nao publicado)")
-        ig._esperar(container, conta["token"], 1800)
+        if link:
+            ig._subir_por_link(conta, arquivo, "teste de envio (nao publicado)", 1800)
+        else:
+            container = ig._subir(conta, arquivo, "teste de envio (nao publicado)")
+            ig._esperar(container, conta["token"], 1800)
         return "ACEITO", time.time() - inicio
     except ig.ErroInstagram as exc:
         return f"RECUSADO: {exc}", time.time() - inicio
@@ -37,6 +41,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--duracoes", default="60,77,120,180,300")
     p.add_argument("--video", help="nome do video em filmes/entrada (padrao: o mais longo)")
+    p.add_argument("--link", action="store_true",
+                   help="manda pelo link temporario (video_url) em vez do envio direto")
     args = p.parse_args()
 
     conta = ig._conta(None)
@@ -44,7 +50,10 @@ def main() -> None:
     videos = mf.listar_videos()
     video = mf.ENTRADA / args.video if args.video else max(videos, key=mf.duracao)
     total = mf.duracao(video)
-    print(f"conta @{conta['username']} | video {video.name} ({total:.0f}s)\n")
+    modo = "link temporario" if args.link else "envio direto"
+    print(f"conta @{conta['username']} | {modo} | video {video.name} ({total:.0f}s)\n")
+    if args.link and args.duracoes == p.get_default("duracoes"):
+        args.duracoes = f"77,{total:.0f}"   # o que o envio direto nao aguenta
     with tempfile.TemporaryDirectory() as tmp:
         for seg in (float(s) for s in args.duracoes.split(",")):
             if seg > total:
@@ -54,7 +63,7 @@ def main() -> None:
             corte = {**mf.corte_de(video, molde), "inicio": 0.0, "fim": seg}
             mf.renderizar(video, arq, molde, mf.gancho_de(video, None, molde), corte)
             mb = arq.stat().st_size / 1e6
-            resultado, gasto = medir(conta, arq)
+            resultado, gasto = medir(conta, arq, args.link)
             print(f"{seg:>5.0f}s  {mb:6.1f} MB  {gasto:5.0f}s  {resultado}", flush=True)
 
 

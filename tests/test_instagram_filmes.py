@@ -7,6 +7,7 @@ Nenhuma chamada sai para a Meta: requests.get/post sao trocados por um falso.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta
 
 import pytest
@@ -36,6 +37,12 @@ class MetaFalsa:
         self.erro_comentario = None
         self.erro_insights = None
         self.expira = 0                 # expires_at do debug_token
+        self.links = []                 # arquivos entregues pelo link temporario (simulado)
+
+    @contextlib.contextmanager
+    def compartilhar(self, arquivo):
+        self.links.append(arquivo)
+        yield "https://teste.trycloudflare.com/v/TOKEN.mp4"
 
     def get(self, url, params=None, **_):
         self.chamadas.append(("GET", url, params))
@@ -97,6 +104,8 @@ def meta(tmp_path, monkeypatch):
     monkeypatch.setattr(ig.requests, "get", falsa.get)
     monkeypatch.setattr(ig.requests, "post", falsa.post)
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ig.link_publico, "compartilhar", falsa.compartilhar)
+    monkeypatch.setattr(ig.link_publico, "disponivel", lambda: True)
     return falsa
 
 
@@ -262,7 +271,8 @@ def test_conectar_avisa_quando_o_token_vai_vencer(meta):
     assert "aviso" not in ig.conectar("T", "app", "segredo")
 
 
-def test_meta_nao_processou_explica_a_duracao_e_nao_repete(meta):
+def test_meta_nao_processou_sem_link_explica_a_duracao(meta, monkeypatch):
+    monkeypatch.setattr(ig.link_publico, "disponivel", lambda: False)
     ig.conectar("T")
     _pronto()
     meta.falhas_processamento = 1
@@ -270,6 +280,40 @@ def test_meta_nao_processou_explica_a_duracao_e_nao_repete(meta):
         ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
     assert e.value.fatal
     assert len([c for c in meta.chamadas if "rupload" in c[1]]) == 1
+
+
+def test_meta_nao_processou_o_direto_vai_por_link(meta):
+    ig.conectar("T")
+    _pronto()
+    meta.falhas_processamento = 1
+    r = ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
+    assert r["media_id"] == "MEDIA1" and len(meta.links) == 1
+
+
+def test_video_longo_vai_por_link_sem_rupload(meta, monkeypatch):
+    ig.conectar("T")
+    _pronto()
+    monkeypatch.setattr(mf, "duracao", lambda v: 155.0)
+    r = ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
+    assert r["media_id"] == "MEDIA1"
+    criar = next(c for c in meta.chamadas if c[1].endswith("/media"))
+    assert criar[2]["video_url"].startswith("https://") and "upload_type" not in criar[2]
+    assert not any("rupload" in c[1] for c in meta.chamadas)
+
+
+def test_link_que_falha_vira_erro_que_repete(meta, monkeypatch):
+    ig.conectar("T")
+    _pronto()
+    monkeypatch.setattr(mf, "duracao", lambda v: 155.0)
+
+    @contextlib.contextmanager
+    def quebra(arquivo):
+        raise ig.link_publico.ErroLink("o tunel nao respondeu")
+        yield
+    monkeypatch.setattr(ig.link_publico, "compartilhar", quebra)
+    with pytest.raises(ig.ErroInstagram, match="tunel") as e:
+        ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "x")
+    assert not e.value.fatal                                     # tenta de novo em 10 min
 
 
 def test_video_acima_de_15_min_e_recusado_antes_do_upload(meta, monkeypatch):
