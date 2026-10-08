@@ -146,7 +146,12 @@ def test_horarios_de_quem_posta_a_noite_atravessam_a_meia_noite():
         ["06 13:35", "06 18:35", "06 22:35", "07 03:35", "07 08:35", "07 13:35", "07 18:35"]
 
 
-def test_reorganizar_reespaca_mantendo_a_ordem(meta):
+def test_reorganizar_reespaca_mantendo_a_ordem(meta, monkeypatch):
+    # relogio fixo: com o relogio real, a sobra da janela de ontem (ex.: so as
+    # 10:35) cria um salto ate 22:35 e o teste falhava conforme a hora do dia
+    original = ig.horarios
+    monkeypatch.setattr(ig, "horarios", lambda q, cfg, depois_de=None, ocupados=None:
+                        original(q, cfg, depois_de or datetime(2026, 10, 6, 12, 0), ocupados))
     ig.conectar("T")
     for n in ("a.mp4", "b.mp4"):
         _pronto_em_partes(n, 2)

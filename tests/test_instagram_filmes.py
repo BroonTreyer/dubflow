@@ -242,6 +242,22 @@ def test_baixar_renders_em_zip(meta):
     assert not list(mf.RAIZ.glob("*.baixando.zip"))              # temporario apagado
 
 
+def test_pasta_tiktok_recebe_so_os_novos(meta, tmp_path, monkeypatch):
+    destino = tmp_path / "mesa"
+    monkeypatch.setattr(pf, "_area_de_trabalho", lambda: destino)
+    _pronto("a.mp4")
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    r = api.post("/api/enviar-pasta", json={})
+    assert r.json()["copiados"] == 1 and r.json()["ja_tinha"] == 0
+    assert (destino / "tiktok" / "a_molde.mp4").is_file()
+    _pronto_em_partes("b.mp4", 2)                                  # render novo depois
+    r = api.post("/api/enviar-pasta", json={}).json()
+    assert (r["copiados"], r["ja_tinha"]) == (2, 1)                # a nao repete
+    r = api.post("/api/enviar-pasta", json={}).json()
+    assert (r["copiados"], r["ja_tinha"]) == (0, 3)
+    assert not list((destino / "tiktok").glob("*.copiando"))
+
+
 def test_apagar_tirando_da_fila_quando_confirmado(meta):
     ig.conectar("T")
     _pronto("a.mp4")

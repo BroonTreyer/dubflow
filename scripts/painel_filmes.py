@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import logging
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -312,6 +313,72 @@ def baixar_renders(v: list[str] = Query(default=[]), checar: bool = False):
     log.info("zip de %d render(s) de %d video(s) para baixar", len(arquivos), len(videos))
     return FileResponse(tmp, filename=nome, media_type="application/zip",
                         background=BackgroundTask(tmp.unlink, missing_ok=True))
+
+
+def _area_de_trabalho() -> Path:
+    """A Area de Trabalho de verdade (com OneDrive ela nao fica em ~/Desktop)."""
+    try:
+        import os
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+            pasta = Path(os.path.expandvars(winreg.QueryValueEx(k, "Desktop")[0]))
+        if pasta.is_dir():
+            return pasta
+    except OSError:
+        pass
+    return Path.home() / "Desktop"
+
+
+PASTA_TIKTOK = "tiktok"
+
+
+def _pasta_tiktok() -> Path:
+    return _area_de_trabalho() / PASTA_TIKTOK
+
+
+@app.post("/api/enviar-pasta")
+def enviar_pasta(corpo: dict | None = None) -> dict:
+    """Copia para Area de Trabalho/tiktok so o que ainda nao esta la.
+
+    "Ja esta la" = mesmo nome e mesmo tamanho; um render refeito (tamanho
+    diferente) substitui o antigo. Copia para um temporario e renomeia, para
+    uma copia interrompida nunca contar como pronta na proxima vez.
+    """
+    nomes = (corpo or {}).get("v") or []
+    videos = [_video(n) for n in nomes] if nomes else mf.listar_videos()
+    arquivos = [s for x in videos for s in mf.saidas_de(x)]
+    if not arquivos:
+        raise HTTPException(404, "nenhum video renderizado para enviar")
+    pasta = _pasta_tiktok()
+    pasta.mkdir(parents=True, exist_ok=True)
+    copiados, ja_tinha, bytes_ = 0, 0, 0
+    for a in arquivos:
+        destino = pasta / a.name
+        tamanho = a.stat().st_size
+        if destino.is_file() and destino.stat().st_size == tamanho:
+            ja_tinha += 1
+            continue
+        tmp = destino.with_name(destino.name + ".copiando")
+        try:
+            shutil.copyfile(a, tmp)
+            tmp.replace(destino)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        copiados += 1
+        bytes_ += tamanho
+    log.info("pasta tiktok: %d copiado(s), %d ja estavam la", copiados, ja_tinha)
+    return {"copiados": copiados, "ja_tinha": ja_tinha,
+            "mb": round(bytes_ / 1e6), "pasta": str(pasta)}
+
+
+@app.post("/api/abrir-pasta")
+def abrir_pasta() -> dict:
+    pasta = _pasta_tiktok()
+    pasta.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(["explorer", str(pasta)])
+    return {"ok": True}
 
 
 @app.get("/saida/{nome}")

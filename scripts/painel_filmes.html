@@ -293,8 +293,10 @@
 
     <h2>Baixar</h2>
     <div class="rodape">
-      <button class="prim" id="btnBaixarTodos">⬇ Baixar todos os renderizados</button>
-      <button id="btnBaixarSel">⬇ Baixar selecionados</button>
+      <button class="prim" id="btnPastaNovos">📁 Mandar os novos para a pasta tiktok</button>
+      <button id="btnAbrirPasta">Abrir a pasta tiktok</button>
+      <button id="btnBaixarTodos">⬇ Baixar todos (.zip)</button>
+      <button id="btnBaixarSel">⬇ Baixar selecionados (.zip)</button>
     </div>
     <div class="info" id="txtBaixar" style="margin-top:8px"></div>
 
@@ -1248,6 +1250,28 @@ async function baixar(nomes) {
   a.href = url; a.download = "";
   document.body.appendChild(a); a.click(); a.remove();
 }
+$("#btnPastaNovos").addEventListener("click", async () => {
+  const b = $("#btnPastaNovos");
+  b.disabled = true;
+  $("#txtBaixar").textContent = "Copiando os vídeos novos para a pasta tiktok…";
+  try {
+    const r = await fetch("/api/enviar-pasta", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    const d = await r.json();
+    if (!r.ok) {
+      $("#txtBaixar").innerHTML = `<b style="color:var(--acento)">⚠ ${esc(typeof d.detail === "string" && d.detail !== "Not Found"
+        ? d.detail : "O painel está desatualizado: reinicie o painel e tente de novo.")}</b>`;
+    } else if (!d.copiados) {
+      $("#txtBaixar").textContent = `Nada novo: os ${d.ja_tinha} vídeo(s) já estão na pasta tiktok.`;
+    } else {
+      $("#txtBaixar").textContent = `✔ ${d.copiados} vídeo(s) novo(s) copiado(s) (${d.mb} MB). ${d.ja_tinha} já estavam lá e foram pulados.`;
+    }
+  } catch {
+    $("#txtBaixar").textContent = "Não consegui falar com o painel.";
+  } finally {
+    b.disabled = false;
+  }
+});
+$("#btnAbrirPasta").addEventListener("click", () => fetch("/api/abrir-pasta", {method: "POST"}));
 $("#btnBaixarTodos").addEventListener("click", () => baixar(null));
 $("#btnBaixarSel").addEventListener("click", () => {
   if (!sel.size) { $("#txtBaixar").textContent = "Selecione vídeos na lista primeiro."; return; }
