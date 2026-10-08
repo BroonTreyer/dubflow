@@ -38,6 +38,7 @@ from scripts import molde_filmes as mf
 log = logging.getLogger("instagram_filmes")
 
 GRAPH = "https://graph.facebook.com/v23.0"
+ESPERA_RENDER = timedelta(minutes=10)
 TENTATIVAS = 3
 DURACAO_MAX = 900.0                  # 15 min: teto do Reels por API (doc da Meta, 10/2026)
 TAMANHO_MAX = 300 * 1024 * 1024      # 300 MB, idem
@@ -329,12 +330,13 @@ def uso_do_limite(ig_id: str | None = None) -> dict:
             "limite": (item.get("config") or {}).get("quota_total", 50)}
 
 
-def _subir(conta: dict, video: Path, legenda: str) -> str:
+def _subir(conta: dict, video: Path, legenda: str, capa: int = 0) -> str:
     """Cria o container e sobe o arquivo. Devolve o id do container."""
     token = conta["token"]
     criado = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media", data={
         "media_type": "REELS", "upload_type": "resumable", "caption": legenda[:2200],
-        "share_to_feed": "true", "access_token": token}, timeout=60))
+        "thumb_offset": str(capa), "share_to_feed": "true", "access_token": token},
+        timeout=60))
     container, uri = criado["id"], criado.get("uri")
     if not uri:
         raise ErroInstagram("a API nao devolveu o endereco de upload")
@@ -364,14 +366,16 @@ def _esperar(container: str, token: str, espera_max: int) -> None:
     raise ErroInstagram(f"processamento demorou demais ({status})")
 
 
-def _subir_por_link(conta: dict, video: Path, legenda: str, espera_max: int) -> str:
+def _subir_por_link(conta: dict, video: Path, legenda: str, espera_max: int,
+                    capa: int = 0) -> str:
     """A Meta BAIXA o video de um link temporario e processa com calma (ate 15 min).
     O link so existe ate o container ficar pronto."""
     try:
         with link_publico.compartilhar(video) as url:
             criado = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media", data={
                 "media_type": "REELS", "video_url": url, "caption": legenda[:2200],
-                "share_to_feed": "true", "access_token": conta["token"]}, timeout=60))
+                "thumb_offset": str(capa), "share_to_feed": "true",
+                "access_token": conta["token"]}, timeout=60))
             _esperar(criado["id"], conta["token"], espera_max)
             return criado["id"]
     except link_publico.ErroLink as exc:
@@ -392,17 +396,18 @@ def publicar(video: Path, legenda: str, ig_id: str | None = None,
     if video.stat().st_size > TAMANHO_MAX:
         raise ErroInstagram("o arquivo passa de 300 MB (limite do Reels): renderize de novo, "
                             "o render atual ajusta a qualidade para caber", fatal=True)
+    capa = mf.capa_ms(video)   # capa = um quadro com cena, nunca o 1o quadro as cegas
     if duracao <= LIMITE_DIRETO or not link_publico.disponivel():
         try:
-            container = _subir(conta, video, legenda)
+            container = _subir(conta, video, legenda, capa)
             _esperar(container, token, espera_max)
         except ErroInstagram as exc:
             if not (exc.processamento and link_publico.disponivel()):
                 raise
             log.warning("envio direto nao processou %s; indo por link", video.name)
-            container = _subir_por_link(conta, video, legenda, espera_max)
+            container = _subir_por_link(conta, video, legenda, espera_max, capa)
     else:
-        container = _subir_por_link(conta, video, legenda, espera_max)
+        container = _subir_por_link(conta, video, legenda, espera_max, capa)
 
     media_id = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media_publish", data={
         "creation_id": container, "access_token": token}, timeout=60))["id"]
@@ -718,6 +723,10 @@ def processar_vencidos(agora: datetime | None = None) -> int:
     k = item.get("parte", 1)
     video = saidas[k - 1] if len(saidas) >= k else None
     try:
+        if mf.renderizando(mf.ENTRADA / item["video"]):
+            # render refeito em andamento: os arquivos somem e voltam; espera
+            raise ErroInstagram("o video esta sendo renderizado de novo; tento daqui a pouco",
+                                adiar=ESPERA_RENDER)
         if video is not None and len(saidas) != item.get("partes", 1):
             raise ErroInstagram(
                 f"o video foi renderizado de novo em {len(saidas)} parte(s) e este post era "

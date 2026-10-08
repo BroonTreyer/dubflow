@@ -500,10 +500,10 @@ def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
             canto.putalpha(_mascara_cantos(w, h, raio).point(lambda a: 255 - a))
             canto.save(moldura)
             entradas += ["-loop", "1", "-i", str(moldura)]
-            filtro = (f"[1:v]crop={cw}:{ch}:{cx}:{cy},scale={w}:{h},setsar=1[v0];"
+            filtro = (f"[1:v]setpts=PTS-STARTPTS,crop={cw}:{ch}:{cx}:{cy},scale={w}:{h},setsar=1[v0];"
                       f"[v0][2:v]overlay=0:0:shortest=1[v];")
         else:
-            filtro = f"[1:v]crop={cw}:{ch}:{cx}:{cy},scale={w}:{h},setsar=1[v];"
+            filtro = f"[1:v]setpts=PTS-STARTPTS,crop={cw}:{ch}:{cx}:{cy},scale={w}:{h},setsar=1[v];"
         queimar = ""
         if legenda:
             from scripts import legenda_filmes
@@ -533,7 +533,64 @@ def renderizar(video: Path, saida: Path, molde: dict, gancho: str,
                 erros.seek(0)
                 raise subprocess.CalledProcessError(
                     proc.returncode, cmd, stderr=erros.read().decode(errors="replace"))
+        if _so_fundo_no_inicio(parcial, (y / ALTURA, (y + h) / ALTURA)):
+            parcial.unlink(missing_ok=True)
+            raise RuntimeError("o primeiro quadro saiu sem a cena (so o fundo): a capa do "
+                               "Reels ficaria vazia. Render recusado; renderize de novo.")
         parcial.replace(saida)
+
+
+# ------------------------------------------------------------------ capa
+
+def _quadro_cinza(arquivo: Path, *, segundos: float | None = None,
+                  indice: int | None = None) -> list[int]:
+    """Um quadro em 108x192 tons de cinza (pixels 0-255), sem PIL nem arquivo."""
+    pre = ["-ss", f"{segundos:.3f}"] if segundos else []
+    filtro = "scale=108:192,format=gray"
+    if indice is not None:
+        filtro = f"select=eq(n\\,{indice})," + filtro
+    r = subprocess.run(["ffmpeg", "-v", "error", *pre, "-i", str(arquivo), "-vf", filtro,
+                        "-frames:v", "1", "-f", "rawvideo", "-"],
+                       capture_output=True, check=True)
+    return list(r.stdout)
+
+
+def _uniforme(pixels: list[int], faixa: tuple[float, float]) -> bool:
+    """A faixa vertical (fracoes da altura) e praticamente uma cor so? Legenda
+    queimada por cima nao engana: conta a fracao de pixels perto da mediana."""
+    if len(pixels) < 108 * 192:
+        return False
+    meio = pixels[int(192 * faixa[0]) * 108:int(192 * faixa[1]) * 108]
+    if not meio:
+        return False
+    mediana = sorted(meio)[len(meio) // 2]
+    return sum(abs(p - mediana) <= 10 for p in meio) / len(meio) >= 0.9
+
+
+def _so_fundo_no_inicio(arquivo: Path, faixa: tuple[float, float]) -> bool:
+    """O defeito da capa branca: quadro 0 vazio na area do video e o seguinte
+    ja com cena. Uma abertura escura de verdade dura mais que um quadro."""
+    try:
+        return (_uniforme(_quadro_cinza(arquivo, indice=0), faixa)
+                and not _uniforme(_quadro_cinza(arquivo, indice=2), faixa))
+    except subprocess.CalledProcessError:
+        return False
+
+
+CAPA_FAIXA = (0.40, 0.70)                 # onde o video fica no molde 9:16
+CAPA_TENTATIVAS = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0)
+
+
+def capa_ms(arquivo: Path) -> int:
+    """Instante (ms) para a capa do Reels: o primeiro com cena de verdade, nunca
+    um quadro vazio, branco ou de fade preto. Sem achar, 1 s."""
+    for t in CAPA_TENTATIVAS:
+        try:
+            if not _uniforme(_quadro_cinza(arquivo, segundos=t), CAPA_FAIXA):
+                return int(t * 1000)
+        except subprocess.CalledProcessError:
+            break
+    return 1000
 
 
 def partes(dur_total: float, corte: dict, parte_max: float) -> list[tuple[float, float]]:
@@ -601,6 +658,14 @@ def saidas_de(video: Path) -> list[Path]:
 
 def pronto(video: Path) -> bool:
     return bool(saidas_de(video))
+
+
+def renderizando(video: Path) -> bool:
+    """Tem render deste video em andamento (um .parcial.mp4 aberto)?"""
+    prefixo = f"{video.stem}_molde"
+    return SAIDA.exists() and any(
+        f.name.startswith(prefixo) and f.name.endswith(".parcial.mp4")
+        and not f.name.endswith(".limpando.parcial.mp4") for f in SAIDA.iterdir())
 
 
 def apagar_saidas(video: Path) -> int:
