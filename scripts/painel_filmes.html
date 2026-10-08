@@ -1218,8 +1218,24 @@ $("#btnCcPadrao").addEventListener("click", () => legenda(null, "Seguindo o padr
 
 async function limpar(alvo, nomes, pergunta, extra) {
   if (pergunta && !confirm(pergunta)) return;
-  const r = await post("/api/limpar", {alvo, videos: nomes, ...extra});
-  const d = await r.json();
+  let r = await post("/api/limpar", {alvo, videos: nomes, ...extra});
+  let d = await r.json();
+  if (r.status === 409 && d.detail?.agendados) {
+    // video com post agendado: pergunta em vez de falhar calado
+    if (!confirm(`${d.detail.agendados} destes vídeo(s) têm ${d.detail.posts} post(s) agendado(s) no Instagram.\n\n` +
+                 `Tirar esses posts da fila e apagar mesmo assim?`)) {
+      $("#txtLimpeza").textContent = "Nada foi apagado.";
+      return;
+    }
+    r = await post("/api/limpar", {alvo, videos: nomes, ...extra, tirar_da_fila: true});
+    d = await r.json();
+  }
+  if (!r.ok) {
+    const msg = typeof d.detail === "string" ? d.detail : "Não foi possível apagar.";
+    $("#txtLimpeza").innerHTML = `<b style="color:var(--acento)">⚠ ${esc(msg)}</b>`;
+    return;
+  }
+  carregarAvisos();
   $("#txtLimpeza").textContent = r.ok
     ? (alvo === "cache" ? `Cache limpo: ${d.limpos} item(ns) liberados da memória.`
                         : `${d.limpos} vídeo(s) apagado(s).`)

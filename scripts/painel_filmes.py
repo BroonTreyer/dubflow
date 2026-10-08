@@ -647,11 +647,19 @@ def limpar(dados: dict) -> dict:
     alvos = _selecao(dados.get("videos"))
     if dados.get("somente_prontos"):
         alvos = [v for v in alvos if mf.pronto(v)]
-    agendados = {x["video"] for x in ig.fila() if x["status"] in ("pendente", "publicando")}
+    fila = ig.fila()
+    if any(x["status"] == "publicando" and x["video"] in {v.name for v in alvos} for x in fila):
+        raise HTTPException(409, "um destes videos esta sendo publicado agora; espere 1 minuto")
+    agendados = {x["video"] for x in fila if x["status"] in ("pendente", "erro")}
     presos = [v.name for v in alvos if v.name in agendados]
+    if presos and not dados.get("tirar_da_fila"):
+        # o navegador pergunta e manda de novo com tirar_da_fila
+        raise HTTPException(409, {"agendados": len(presos), "posts": sum(
+            1 for x in fila if x["video"] in presos and x["status"] in ("pendente", "erro"))})
     if presos:
-        raise HTTPException(409, f"{len(presos)} video(s) tem post agendado no Instagram; "
-                                 "tire da fila de publicacao antes de apagar")
+        ig.remover([x["id"] for x in fila if x["video"] in presos
+                    and x["status"] in ("pendente", "erro")])
+        log.warning("limpeza tirou da fila do Instagram os posts de %d video(s)", len(presos))
     # apagar e irreversivel: fica registrado o que, quanto e por qual pedido
     log.warning("limpeza %s (%s): %d video(s): %s", alvo,
                 "todos" + (" prontos" if dados.get("somente_prontos") else "")

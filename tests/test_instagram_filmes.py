@@ -220,6 +220,20 @@ def test_nao_apaga_video_com_post_agendado(meta):
     api = TestClient(pf.app, base_url="http://127.0.0.1")
     r = api.post("/api/limpar", json={"alvo": "originais", "videos": ["a.mp4"]})
     assert r.status_code == 409 and (mf.ENTRADA / "a.mp4").exists()
+    assert r.json()["detail"] == {"agendados": 1, "posts": 1}      # o navegador pergunta
+
+
+def test_apagar_tirando_da_fila_quando_confirmado(meta):
+    ig.conectar("T")
+    _pronto("a.mp4")
+    _pronto("b.mp4")
+    ig.agendar([{"video": v, "legenda": "x"} for v in ("a.mp4", "b.mp4")])
+    ig._atualizar(ig.fila()[1]["id"], status="publicado")         # b ja saiu: historico fica
+    api = TestClient(pf.app, base_url="http://127.0.0.1")
+    r = api.post("/api/limpar", json={"alvo": "originais", "todos": True, "tirar_da_fila": True})
+    assert r.status_code == 200 and r.json()["limpos"] == 2
+    assert not list(mf.ENTRADA.glob("*.mp4"))
+    assert [x["status"] for x in ig.fila()] == ["publicado"]
 
 
 def _so_paginas_sem_ig(permissoes):
