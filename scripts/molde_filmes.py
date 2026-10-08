@@ -71,10 +71,9 @@ PADRAO = {
     "cantos_video": 0,
     "legendar_padrao": False,   # legenda automatica em quem nao tem escolha propria
     # Video mais longo que isso vira Parte 1, Parte 2... O Reels por API aceita ate
-    # 15 min, mas em 05/10/2026 o envio direto recusava um trecho real de 77s
-    # (ProcessingFailedError) com o render ANTIGO (edit list, quadro-chave a cada
-    # 8s). O render atual segue a especificacao; scripts/teste_envio_ig.py mede o
-    # teto de verdade na conta antes de subir este padrao.
+    # 15 min, mas so por URL publica. No envio direto (rupload) a Meta processa
+    # durante a requisicao e desiste por volta de 34s: medido em 07/10/2026 com o
+    # render novo, 60s passa e 77s cai mesmo com 5 MB (scripts/teste_envio_ig.py).
     "parte_max": 60,
     "rotulo_parte": "PARTE {n}",
     "cta_ultima": "SEGUE PRA MAIS FILMES",
@@ -435,25 +434,6 @@ def codificacao_reels(segundos: float) -> list[str]:
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
         "-use_editlist", "0", "-movflags", "+faststart",
     ]
-
-
-LEVE_KBPS = 2000
-
-
-def recodificar_leve(origem: Path, destino: Path) -> Path:
-    """Copia mais leve de um render pronto (bitrate fixo, mesma especificacao): a
-    segunda tentativa quando a Meta desiste de processar o envio direto."""
-    seg = duracao(origem)
-    kbps = min(LEVE_KBPS, kbps_maximo(seg))
-    cod = codificacao_reels(seg)
-    i = cod.index("-crf")
-    cod[i:i + 2] = ["-b:v", f"{kbps}k"]
-    cod[cod.index("-maxrate") + 1] = f"{kbps}k"
-    cod[cod.index("-bufsize") + 1] = f"{kbps * 2}k"
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(origem),
-                    "-map", "0:v:0", "-map", "0:a:0?", *cod, str(destino)],
-                   check=True, capture_output=True)
-    return destino
 
 
 def renderizar(video: Path, saida: Path, molde: dict, gancho: str,

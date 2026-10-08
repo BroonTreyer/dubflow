@@ -262,33 +262,14 @@ def test_conectar_avisa_quando_o_token_vai_vencer(meta):
     assert "aviso" not in ig.conectar("T", "app", "segredo")
 
 
-def test_meta_nao_processou_tenta_versao_leve(meta, monkeypatch):
+def test_meta_nao_processou_explica_a_duracao_e_nao_repete(meta):
     ig.conectar("T")
     _pronto()
-    feitas = []
-
-    def leve(origem, destino):
-        feitas.append(origem)
-        destino.write_bytes(b"y" * 500)
-        return destino
-    monkeypatch.setattr(mf, "recodificar_leve", leve)
     meta.falhas_processamento = 1
-    r = ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
-    assert r["media_id"] == "MEDIA1" and len(feitas) == 1
-    uploads = [c for c in meta.chamadas if "rupload" in c[1]]
-    assert [u[2] for u in uploads] == [1234, 500]               # 2a vez sobe o arquivo leve
-    assert not list(mf.SAIDA.glob("*.leve.*"))                  # e apaga o temporario
-
-
-def test_meta_nao_processou_nem_a_leve_vira_erro_explicado(meta, monkeypatch):
-    ig.conectar("T")
-    _pronto()
-    monkeypatch.setattr(mf, "recodificar_leve",
-                        lambda o, d: (d.write_bytes(b"y"), d)[1])
-    meta.falhas_processamento = 2
-    with pytest.raises(ig.ErroInstagram, match="nem na versao") as e:
+    with pytest.raises(ig.ErroInstagram, match="duracao conta") as e:
         ig.publicar(mf.saida_de(mf.ENTRADA / "a.mp4"), "legenda")
     assert e.value.fatal
+    assert len([c for c in meta.chamadas if "rupload" in c[1]]) == 1
 
 
 def test_video_acima_de_15_min_e_recusado_antes_do_upload(meta, monkeypatch):
@@ -412,6 +393,18 @@ def test_avisos_de_token_e_notificacao_sem_repetir(meta, monkeypatch):
     assert ig.notificar_avisos(agora + timedelta(hours=13)) == 1
     vencido = [a for a in ig.avisos(agora + timedelta(days=2)) if a["nivel"] == "erro"]
     assert vencido and "venceu" in vencido[0]["texto"]
+
+
+def test_erro_de_token_de_antes_da_reconexao_nao_vira_aviso(meta):
+    ig.conectar("T")
+    _pronto()
+    ig.agendar([{"video": "a.mp4", "legenda": "x"}])
+    meta.erro_media = {"code": 190, "message": "Error validating access token"}
+    ig.processar_vencidos(datetime.now() + timedelta(days=30))
+    assert any(a["chave"].startswith("invalido:") for a in ig.avisos())
+    ig._atualizar(ig.fila()[0]["id"], erro_em="2026-01-01T00:00:00")   # erro antigo
+    ig.conectar("T")
+    assert not any(a["chave"].startswith("invalido:") for a in ig.avisos())
 
 
 def test_horarios_da_madrugada_da_janela_de_ontem():

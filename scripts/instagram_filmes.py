@@ -167,11 +167,14 @@ def _conta(ig_id: str | None) -> dict:
 def _explicar(corpo: dict) -> ErroInstagram:
     depuracao = corpo.get("debug_info") or {}
     if depuracao.get("type") == "ProcessingFailedError":
-        # resposta do rupload, sem motivo: a Meta recebeu e desistiu de processar
+        # resposta do rupload, sem motivo. Medido em 07/10/2026 (teste_envio_ig): o
+        # rupload processa o video DURANTE a requisicao e desiste por volta de 34s;
+        # o tempo depende da DURACAO, nao do tamanho (77s com 5 MB tambem cai). 60s
+        # passa. Arquivo mais leve nao resolve: so parte mais curta.
         return ErroInstagram(
-            "A Meta nao conseguiu processar o video no envio direto, nem na versao mais "
-            "leve. Renderize de novo (o render novo e mais leve de processar) ou diminua "
-            "'Duracao maxima de cada parte' no molde.", fatal=True, processamento=True)
+            "A Meta nao processa video acima de ~60s no envio direto (a duracao conta, "
+            "nao o tamanho). Diminua 'Duracao maxima de cada parte' no molde para 60s, "
+            "renderize de novo e agende de novo.", fatal=True, processamento=True)
     erro = corpo.get("error") or {}
     codigo, msg = erro.get("code"), erro.get("message", "") or str(corpo)
     sub = erro.get("error_subcode")
@@ -226,6 +229,7 @@ def conectar(token_usuario: str, app_id: str = "", app_secret: str = "") -> dict
     contas = [{"ig_id": p["instagram_business_account"]["id"],
                "username": p["instagram_business_account"].get("username", ""),
                "pagina": p.get("name", ""), "token": p["access_token"],
+               "conectado_em": datetime.now().isoformat(timespec="seconds"),
                **_validade(p["access_token"])}
               for p in paginas if p.get("instagram_business_account")]
     if not contas:
@@ -369,19 +373,7 @@ def publicar(video: Path, legenda: str, ig_id: str | None = None,
     if video.stat().st_size > TAMANHO_MAX:
         raise ErroInstagram("o arquivo passa de 300 MB (limite do Reels): renderize de novo, "
                             "o render atual ajusta a qualidade para caber", fatal=True)
-    try:
-        container = _subir(conta, video, legenda)
-    except ErroInstagram as exc:
-        if not exc.processamento:
-            raise
-        # a Meta desistiu de processar: tenta UMA vez com uma versao mais leve
-        log.warning("Meta nao processou %s; tentando versao leve", video.name)
-        leve = video.with_name(video.stem + ".leve.parcial.mp4")  # orfao e limpo no boot
-        try:
-            mf.recodificar_leve(video, leve)
-            container = _subir(conta, leve, legenda)
-        finally:
-            leve.unlink(missing_ok=True)
+    container = _subir(conta, video, legenda)
     _esperar(container, token, espera_max)
 
     media_id = _json(requests.post(f"{GRAPH}/{conta['ig_id']}/media_publish", data={
@@ -722,7 +714,8 @@ def processar_vencidos(agora: datetime | None = None) -> int:
             return 1
         tentativas = item["tentativas"] + 1
         if fatal or tentativas >= TENTATIVAS:
-            _atualizar(item["id"], status="erro", erro=str(exc), tentativas=tentativas)
+            _atualizar(item["id"], status="erro", erro=str(exc), tentativas=tentativas,
+                       erro_em=datetime.now().isoformat(timespec="seconds"))
         else:  # adia em vez de perder o post
             _atualizar(item["id"], status="pendente", erro=str(exc), tentativas=tentativas,
                        quando=(agora + ESPERA_REPETIR).isoformat(timespec="minutes"))
@@ -767,8 +760,12 @@ def avisos(agora: datetime | None = None) -> list[dict]:
             saida.append({"chave": f"acesso:{c['ig_id']}", "nivel": "alerta",
                           "texto": f"A Meta pede nova autorizacao de {nome} ate {quando}: "
                                    "gere um token novo e conecte de novo."})
+    # so erro de token DEPOIS da ultima conexao: o de antes ja foi resolvido reconectando
+    conectada = {c["ig_id"]: c.get("conectado_em") for c in cfg["contas"]}
     invalidos = {x["ig_id"] for x in atual if x["status"] == "erro"
-                 and (x.get("erro") or "").startswith("Token expirado")}
+                 and (x.get("erro") or "").startswith("Token expirado")
+                 and not (conectada.get(x["ig_id"]) and
+                          (x.get("erro_em") or "") < conectada[x["ig_id"]])}
     for ig_id in invalidos - {c["ig_id"] for c in cfg["contas"]
                               if c.get("expira") and c["expira"] <= agora_ts}:
         nome = next((x["username"] for x in atual if x["ig_id"] == ig_id), ig_id)
