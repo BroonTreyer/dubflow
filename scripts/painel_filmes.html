@@ -1223,17 +1223,29 @@ $("#btnCcPadrao").addEventListener("click", () => legenda(null, "Seguindo o padr
 
 /* ------------------------------------------------------------ baixar */
 
-function baixar(nomes) {
+async function baixar(nomes) {
   const prontos = videos.filter(v => v.partes_prontas > 0 && (!nomes || nomes.includes(v.nome)));
   if (!prontos.length) {
     $("#txtBaixar").textContent = nomes ? "Nenhum dos selecionados está renderizado." : "Nenhum vídeo renderizado ainda.";
     return;
   }
-  const arquivos = prontos.reduce((n, v) => n + v.partes_prontas, 0);
   const q = nomes ? "?" + prontos.map(v => "v=" + encodeURIComponent(v.nome)).join("&") : "";
-  $("#txtBaixar").textContent = `Preparando ${arquivos} arquivo(s) de ${prontos.length} vídeo(s) num .zip… o download começa sozinho.`;
+  const url = "/api/baixar-renders" + q;
+  try {
+    const r = await fetch(url + (q ? "&" : "?") + "checar=1");
+    const d = await r.json();
+    if (!r.ok) {
+      $("#txtBaixar").innerHTML = `<b style="color:var(--acento)">⚠ ${esc(typeof d.detail === "string" && d.detail !== "Not Found"
+        ? d.detail : "O painel está desatualizado: reinicie o painel e tente de novo.")}</b>`;
+      return;
+    }
+    $("#txtBaixar").textContent = `Preparando ${d.arquivos} arquivo(s) (${d.mb} MB) de ${prontos.length} vídeo(s) num .zip… o download começa sozinho.`;
+  } catch {
+    $("#txtBaixar").textContent = "Não consegui falar com o painel.";
+    return;
+  }
   const a = document.createElement("a");
-  a.href = "/api/baixar-renders" + q; a.download = "";
+  a.href = url; a.download = "";
   document.body.appendChild(a); a.click(); a.remove();
 }
 $("#btnBaixarTodos").addEventListener("click", () => baixar(null));

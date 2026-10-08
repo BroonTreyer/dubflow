@@ -286,7 +286,7 @@ def _nome_livre(destino: Path) -> Path:
 
 
 @app.get("/api/baixar-renders")
-def baixar_renders(v: list[str] = Query(default=[])) -> FileResponse:
+def baixar_renders(v: list[str] = Query(default=[]), checar: bool = False):
     """Os videos prontos (ja no molde) num .zip: os pedidos em `v`, ou todos.
 
     ZIP sem compressao: MP4 ja e comprimido, e assim o zip sai na hora em vez de
@@ -297,6 +297,9 @@ def baixar_renders(v: list[str] = Query(default=[])) -> FileResponse:
     arquivos = [s for x in videos for s in mf.saidas_de(x)]
     if not arquivos:
         raise HTTPException(404, "nenhum video renderizado para baixar")
+    if checar:  # o navegador confere antes de baixar: erro vira mensagem, nao arquivo .json
+        return {"arquivos": len(arquivos),
+                "mb": round(sum(a.stat().st_size for a in arquivos) / 1e6)}
     tmp = mf.RAIZ / f"renders_{secrets.token_hex(4)}.baixando.zip"
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED, allowZip64=True) as z:

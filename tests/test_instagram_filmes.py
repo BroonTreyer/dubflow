@@ -238,6 +238,7 @@ def test_baixar_renders_em_zip(meta):
     assert sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist()) == \
         ["b_molde_p1.mp4", "b_molde_p2.mp4"]
     assert api.get("/api/baixar-renders", params={"v": ["c.mp4"]}).status_code == 404
+    assert api.get("/api/baixar-renders", params={"checar": 1}).json() == {"arquivos": 3, "mb": 0}
     assert not list(mf.RAIZ.glob("*.baixando.zip"))              # temporario apagado
 
 
