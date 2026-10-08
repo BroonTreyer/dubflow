@@ -382,7 +382,9 @@
         <textarea id="igModelo"></textarea>
         <label>Hashtags</label>
         <input type="text" id="igHashtags">
-        <div class="check"><input type="checkbox" id="igIa"><label for="igIa" style="margin:0">✨ Legenda escrita pela IA para cada vídeo (usa o gancho e as falas; se a IA falhar, usa o modelo acima)</label></div>
+        <div class="check"><input type="checkbox" id="igIa"><label for="igIa" style="margin:0">✨ Legenda escrita pela IA, fiel ao filme (ela vê quadros de cada parte e lê as falas; cita o nome do filme só quando tem certeza; se a IA falhar, usa o modelo acima)</label></div>
+        <label>Chamada no fim de toda legenda (vazio = nenhuma)</label>
+        <textarea id="igCta" style="min-height:50px" placeholder="Ex.: Quer assistir esse e outros filmes completos? Acesse o link da bio!"></textarea>
         <label>Primeiro comentário automático (vazio = nenhum)</label>
         <textarea id="igComentario" style="min-height:50px" placeholder="Ex.: Qual o nome desse filme? Comenta aí 👇"></textarea>
         <div class="check" id="igDistribuirBox"><input type="checkbox" id="igDistribuir"><label for="igDistribuir" style="margin:0">Repartir os vídeos entre todas as contas conectadas</label></div>
@@ -403,6 +405,7 @@
         <button class="prim" id="btnIgAgendarSel">Agendar selecionados</button>
         <button id="btnIgAgendarTodos">Agendar todos os prontos</button>
         <span style="flex:1"></span>
+        <button id="btnIgIaTodos" title="A IA reescreve a legenda de todos os posts pendentes, fiel a cada filme">✨ Reescrever legendas com IA</button>
         <button class="prim" id="btnIgRepetirTodos" hidden>↻ Tentar de novo os com erro</button>
         <button id="btnIgTirarTodos" class="perigo">Tirar todos os pendentes</button>
         <button id="btnIgReorg" title="Redistribui os pendentes pelos horários configurados, na mesma ordem">Reorganizar horários</button>
@@ -973,7 +976,7 @@ function igPreencherCfg() {
   $("#igModelo").value = c.legenda_modelo; $("#igHashtags").value = c.hashtags;
   $("#igPorDia").value = c.por_dia; $("#igInicio").value = c.inicio;
   $("#igIntervalo").value = c.intervalo_min;
-  $("#igIa").checked = !!c.legenda_ia; $("#igComentario").value = c.comentario || "";
+  $("#igIa").checked = !!c.legenda_ia; $("#igComentario").value = c.comentario || ""; $("#igCta").value = c.cta || "";
   $("#igDistribuir").checked = !!c.distribuir;
   igCfgCarregada = true;
 }
@@ -1044,7 +1047,7 @@ $("#btnIgSalvarCfg").addEventListener("click", async () => {
     legenda_modelo: $("#igModelo").value, hashtags: $("#igHashtags").value,
     por_dia: $("#igPorDia").value, inicio: $("#igInicio").value,
     intervalo_min: $("#igIntervalo").value, legenda_ia: $("#igIa").checked,
-    comentario: $("#igComentario").value, distribuir: $("#igDistribuir").checked})).json();
+    comentario: $("#igComentario").value, cta: $("#igCta").value, distribuir: $("#igDistribuir").checked})).json();
   igPreencherCfg();
   $("#igCfgMsg").textContent = "Salvo. Para aplicar na fila já montada, use “Reorganizar horários”.";
 });
@@ -1156,6 +1159,22 @@ async function igRepetir(corpo) {
   await igCarregar(); carregarAvisos();
   $("#igFilaMsg").textContent = `${d.repetidos} post(s) de volta à fila, nos próximos horários livres.`;
 }
+$("#btnIgIaTodos").addEventListener("click", async () => {
+  const n = igEstado.fila.filter(x => x.status === "pendente").length;
+  if (!n) { $("#igFilaMsg").textContent = "Nenhum post pendente."; return; }
+  if (!confirm(`A IA vai reescrever a legenda dos ${n} post(s) pendentes, vendo cada filme. Leva alguns minutos. Continuar?`)) return;
+  const b = $("#btnIgIaTodos");
+  b.disabled = true;
+  $("#igFilaMsg").textContent = `✨ A IA está assistindo e escrevendo as ${n} legendas… (alguns minutos, pode continuar usando o painel)`;
+  try {
+    const r = await post("/api/ig/legenda-ia", {todos: true});
+    const d = await r.json();
+    if (!r.ok) { $("#igFilaMsg").textContent = "⚠ " + d.detail; return; }
+    await igCarregar();
+    $("#igFilaMsg").textContent = `✔ ${d.reescritas} legenda(s) reescrita(s)` +
+      (d.falharam ? `; ${d.falharam} ficaram como estavam (a IA não respondeu): clique de novo para tentar outra vez.` : ".");
+  } finally { b.disabled = false; }
+});
 $("#btnIgRepetirTodos").addEventListener("click", () => {
   const n = igEstado.fila.filter(x => x.status === "erro").length;
   if (n && confirm(`Colocar os ${n} post(s) com erro de volta na fila, nos próximos horários livres?`))

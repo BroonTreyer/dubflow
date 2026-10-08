@@ -328,6 +328,22 @@ _EFFORT_OPENAI = {"low": "low", "medium": "medium", "high": "high",
                   "xhigh": "xhigh", "max": "xhigh"}
 
 
+def _blocos_openai(user: Any) -> Any:
+    """`user` pode ser texto ou blocos no formato da Anthropic (texto + imagem
+    base64); a OpenAI quer imagem como data URL."""
+    if isinstance(user, str):
+        return user
+    saida = []
+    for b in user:
+        if b.get("type") == "image":
+            src = b["source"]
+            saida.append({"type": "image_url", "image_url": {
+                "url": f"data:{src['media_type']};base64,{src['data']}"}})
+        else:
+            saida.append({"type": "text", "text": b.get("text", "")})
+    return saida
+
+
 class OpenAIProvider(Provider):
     def _cli(self):
         if self._client is None:
@@ -345,7 +361,7 @@ class OpenAIProvider(Provider):
             model=self.model_for(role),
             max_completion_tokens=max_tokens,
             messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
+                      {"role": "user", "content": _blocos_openai(user)}],
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": "resposta", "schema": schema, "strict": True},

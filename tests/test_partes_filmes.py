@@ -56,6 +56,8 @@ def test_render_divide_em_partes_com_selo_e_cta_final(pastas):  # noqa: F811
     assert all(d <= 40.5 for d in duracoes) and abs(sum(duracoes) - 100) < 1.5
     assert vistos == [(molde["cta"], "PARTE 1"), (molde["cta"], "PARTE 2"),
                       (molde["cta_ultima"], "PARTE 3")]
+    # capa: o 1o quadro de toda parte ja tem a cena (o defeito era so o fundo branco)
+    assert all(mf.capa_ms(s) == 0 for s in saidas)
     # renderizar de novo com limite maior troca 3 partes por 1 arquivo, sem sobra
     mf.renderizar_video(v, mf._validar({"parte_max": 90}), "gancho", {"fim": 30})
     assert [s.name for s in mf.saidas_de(v)] == ["longo_molde.mp4"]
@@ -87,6 +89,9 @@ def meta(pastas, monkeypatch):  # noqa: F811
     monkeypatch.setattr(mf, "duracao", lambda v: 30.0)
     monkeypatch.setattr(ig.link_publico, "compartilhar", falsa.compartilhar)
     monkeypatch.setattr(ig.link_publico, "disponivel", lambda: True)
+    # nada de IA de verdade nem ffmpeg em arquivo falso nos testes
+    monkeypatch.setattr(pf.lia, "gerar", lambda pedidos, cfg: [None] * len(pedidos))
+    monkeypatch.setattr(mf, "capa_ms", lambda v: 0)
     return falsa
 
 
@@ -260,8 +265,12 @@ def test_parte_max_aceita_ate_15_min():
 
 
 def test_legenda_do_post_com_e_sem_marcador():
-    com = {**ig.CONFIG_PADRAO, "legenda_modelo": "{gancho} {parte}", "hashtags": ""}
+    com = {**ig.CONFIG_PADRAO, "legenda_modelo": "{gancho} {parte}", "hashtags": "", "cta": ""}
     assert ig.montar_legenda("G", com, 2, 3) == "G Parte 2/3"
     assert ig.montar_legenda("G", com, 1, 1) == "G"
-    sem = {**ig.CONFIG_PADRAO, "legenda_modelo": "{gancho}", "hashtags": "#x"}
+    sem = {**ig.CONFIG_PADRAO, "legenda_modelo": "{gancho}", "hashtags": "#x", "cta": ""}
     assert ig.montar_legenda("G", sem, 1, 2) == "G\n\nParte 1/2\n\n#x"
+    # a chamada da bio entra antes das hashtags, por padrao
+    padrao = {**ig.CONFIG_PADRAO, "legenda_modelo": "{gancho}", "hashtags": "#x"}
+    assert ig.montar_legenda("G", padrao) == f"G\n\n{ig.CONFIG_PADRAO['cta']}\n\n#x"
+    assert "link da nossa bio" in ig.CONFIG_PADRAO["cta"]

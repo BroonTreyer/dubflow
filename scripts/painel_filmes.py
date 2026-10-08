@@ -583,19 +583,30 @@ def ig_repetir(dados: dict) -> dict:
 
 @app.post("/api/ig/legenda-ia")
 def ig_legenda_ia(dados: dict) -> dict:
-    """Reescreve com a IA a legenda de um post pendente."""
-    item_id = str(dados.get("id", ""))
-    item = next((x for x in ig.fila() if x["id"] == item_id and x["status"] == "pendente"), None)
-    if item is None:
+    """Reescreve com a IA a legenda de um post pendente ({"id"}) ou de todos
+    os pendentes ({"todos": true}; partes do mesmo video numa chamada so)."""
+    pendentes = [x for x in ig.fila() if x["status"] == "pendente"]
+    if dados.get("todos"):
+        alvos = pendentes
+    else:
+        alvos = [x for x in pendentes if x["id"] == str(dados.get("id", ""))]
+    if not alvos:
         raise HTTPException(409, "so da para reescrever post pendente")
-    video = mf.ENTRADA / item["video"]
-    gancho = item.get("gancho") or mf.gancho_de(video, None, mf.carregar_molde())
-    texto = lia.gerar([{"video": video, "gancho": gancho, "parte": item.get("parte", 1),
-                        "partes": item.get("partes", 1)}], ig.config()["hashtags"])[0]
-    if not texto:
+    molde = mf.carregar_molde()
+    pedidos = []
+    for x in alvos:
+        video = mf.ENTRADA / x["video"]
+        pedidos.append({"video": video, "parte": x.get("parte", 1), "partes": x.get("partes", 1),
+                        "gancho": x.get("gancho") or mf.gancho_de(video, None, molde)})
+    textos = lia.gerar(pedidos, ig.config())
+    feitos = 0
+    for x, t in zip(alvos, textos):
+        if t:
+            ig._atualizar(x["id"], legenda=t)
+            feitos += 1
+    if not feitos:
         raise HTTPException(502, "a IA nao respondeu agora; tente de novo em instantes")
-    ig._atualizar(item_id, legenda=texto)
-    return {"fila": ig.fila()}
+    return {"fila": ig.fila(), "reescritas": feitos, "falharam": len(alvos) - feitos}
 
 
 @app.get("/api/ig/resultados")
@@ -666,7 +677,7 @@ def ig_agendar(dados: dict) -> dict:
         novos = [i for i in itens if i["video"] not in ja]
         textos = lia.gerar([{"video": mf.ENTRADA / i["video"], "gancho": i["gancho"],
                              "parte": i["parte"], "partes": i["partes"]} for i in novos],
-                           cfg["hashtags"])
+                           cfg)
         for i, t in zip(novos, textos):
             if t:
                 i["legenda"] = t

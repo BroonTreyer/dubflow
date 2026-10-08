@@ -88,7 +88,10 @@ CONFIG_PADRAO = {
     "app_secret": "",
     "legenda_modelo": "{gancho} 🎬 {parte}\n\nSegue pra ver mais cenas!",
     "hashtags": "#filmes #cinema #series #netflix #filme",
-    "legenda_ia": False,     # legenda de cada post escrita pela IA (cai no modelo se falhar)
+    "legenda_ia": True,      # legenda de cada post escrita pela IA (cai no modelo se falhar)
+    # chamada fixa no fim de toda legenda (IA ou modelo); vazio = nenhuma
+    "cta": ("🍿 Quer assistir esse e muitos outros filmes e séries completos? "
+            "Acesse o link da nossa bio! 🔗"),
     "comentario": "",        # primeiro comentario automatico; vazio = nenhum
     "distribuir": False,     # agendar repartindo os videos entre todas as contas
     "por_dia": 5,
@@ -125,7 +128,7 @@ def salvar_config(novo: dict) -> dict:
     """Grava o que e editavel no painel. Contas/tokens so mudam por conectar()."""
     with _trava:
         atual = config()
-        for k in ("legenda_modelo", "hashtags", "inicio", "ativa", "comentario"):
+        for k in ("legenda_modelo", "hashtags", "inicio", "ativa", "comentario", "cta"):
             if k in novo:
                 atual[k] = str(novo[k]) if novo[k] is not None else None
         for k in ("legenda_ia", "distribuir"):
@@ -138,6 +141,7 @@ def salvar_config(novo: dict) -> dict:
                 except (TypeError, ValueError):
                     pass
         atual["comentario"] = (atual["comentario"] or "")[:2200]
+        atual["cta"] = (atual.get("cta") or "")[:500]
         try:
             datetime.strptime(atual["inicio"], "%H:%M")
         except ValueError:
@@ -520,7 +524,8 @@ def montar_legenda(gancho: str, cfg: dict | None = None, parte: int = 1, total: 
     if rotulo and "{parte}" not in modelo:
         texto = f"{texto.rstrip()}\n\n{rotulo}"
     texto = "\n".join(l.rstrip() for l in texto.splitlines()).strip()
-    return f"{texto}\n\n{cfg['hashtags']}".strip() if cfg["hashtags"].strip() else texto
+    blocos = [texto, (cfg.get("cta") or "").strip(), cfg["hashtags"].strip()]
+    return "\n\n".join(b for b in blocos if b)
 
 
 def horarios(quantidade: int, cfg: dict, depois_de: datetime | None = None,

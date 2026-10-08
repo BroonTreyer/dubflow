@@ -106,6 +106,9 @@ def meta(tmp_path, monkeypatch):
     monkeypatch.setattr(ig.time, "sleep", lambda s: None)
     monkeypatch.setattr(ig.link_publico, "compartilhar", falsa.compartilhar)
     monkeypatch.setattr(ig.link_publico, "disponivel", lambda: True)
+    # nada de IA de verdade nem ffmpeg em arquivo falso nos testes
+    monkeypatch.setattr(pf.lia, "gerar", lambda pedidos, cfg: [None] * len(pedidos))
+    monkeypatch.setattr(mf, "capa_ms", lambda v: 0)
     return falsa
 
 
