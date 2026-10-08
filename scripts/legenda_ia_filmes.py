@@ -44,7 +44,9 @@ Para cada parte pedida, escreva um texto que:
 - Parte 2 em diante continua a historia da anterior (sem repetir o que ja foi dito).
 - Termine com uma pergunta curta que provoque comentario (ex.: "Voce teria aguentado
   calado?").
-- Portugues do Brasil, tom de conversa, 2 a 4 frases, no maximo 320 caracteres,
+- Portugues do Brasil COM acentuacao correta (você, não, está, já), mesmo que estas
+  instrucoes estejam sem acento.
+- Tom de conversa, 2 a 4 frases, no maximo 320 caracteres,
   no maximo 2 emojis. Sem hashtags, sem "link na bio", sem "parte X" (isso e
   colocado depois automaticamente).
 
