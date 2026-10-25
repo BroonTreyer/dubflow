@@ -20,3 +20,6 @@ filmes/
 
 # binarios baixados (cloudflared etc.)
 ferramentas/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
